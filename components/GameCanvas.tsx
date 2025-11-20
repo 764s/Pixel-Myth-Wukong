@@ -756,13 +756,37 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
               const dist = Math.sqrt(Math.pow(pCx - bCx, 2) + Math.pow(pCy - bCy, 2));
               if (dist < range) hit = true;
           } else {
-              const attackBoxX = player.facingRight ? player.pos.x + player.width : player.pos.x - range;
-              const attackBoxW = range;
+              // Standard Ground Hitbox
+              let attackBoxX = player.facingRight ? player.pos.x + player.width : player.pos.x - range;
+              let attackBoxW = range;
+              let attackBoxY = player.pos.y;
+              let attackBoxH = player.height;
+
+              // Special Handling for Slam (Combo 4) and Heavy Attack
+              // To fix missing ground targets when in air, and missing targets slightly behind
+              if ((player.state === 'attack' && player.comboCount === 4) || player.state === 'heavy_attack') {
+                  const slamReach = 250; // Vertical reach downwards
+                  attackBoxH += slamReach;
+                  
+                  const backBuffer = 40; // Hits slightly behind center
+                  
+                  // Recalculate X/W to include back buffer
+                  if (player.facingRight) {
+                      // Start slightly behind the player
+                      attackBoxX = player.pos.x - backBuffer;
+                      attackBoxW = range + player.width + backBuffer;
+                  } else {
+                      // If facing left, attack goes Left (from pos.x - range) to Right (pos.x + width + back)
+                      attackBoxX = player.pos.x - range;
+                      attackBoxW = range + player.width + backBuffer;
+                  }
+              }
+
               if (
                 attackBoxX < boss.pos.x + boss.width &&
                 attackBoxX + attackBoxW > boss.pos.x &&
-                player.pos.y < boss.pos.y + boss.height &&
-                player.pos.y + player.height > boss.pos.y
+                attackBoxY < boss.pos.y + boss.height &&
+                attackBoxY + attackBoxH > boss.pos.y
               ) {
                   hit = true;
               }
@@ -1274,7 +1298,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
             // Smear arc
             ctx.globalCompositeOperation = 'lighter';
             ctx.fillStyle = cGold;
-            ctx.globalAlpha = 0.4;
+            ctx.globalAlpha = 0.6;
             ctx.beginPath();
             ctx.arc(0, 0, 85, angle - 1.5, angle, false);
             ctx.arc(0, 0, 70, angle, angle - 1.5, true);
@@ -1287,7 +1311,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
             
             ctx.globalCompositeOperation = 'lighter';
             ctx.shadowColor = '#fbbf24';
-            ctx.shadowBlur = 15; 
+            ctx.shadowBlur = 30; 
             
             ctx.fillStyle = cGold;
             ctx.beginPath();
@@ -1342,7 +1366,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                  // Slam Smear
                  ctx.globalCompositeOperation = 'lighter';
                  ctx.fillStyle = cGold;
-                 ctx.globalAlpha = 0.6;
+                 ctx.globalAlpha = 0.8;
                  ctx.beginPath();
                  ctx.moveTo(0,0);
                  ctx.arc(0,0, 160, angle - 0.6, angle, true);
@@ -1358,8 +1382,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
             }
 
             ctx.rotate(angle);
-            ctx.shadowColor = '#f59e0b';
-            ctx.shadowBlur = 25;
+            ctx.shadowColor = '#fbbf24';
+            ctx.shadowBlur = 40;
             drawRect(ctx, -10, -5, 150, 12, cGold); 
             drawRect(ctx, 140, -8, 20, 18, '#fff'); 
             ctx.shadowBlur = 0;
