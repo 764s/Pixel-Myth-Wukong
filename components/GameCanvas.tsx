@@ -59,7 +59,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
   const bgmRunningRef = useRef<boolean>(false);
   const nextNoteTimeRef = useRef<number>(0);
   const schedulerTimerRef = useRef<number>(0);
-  const melodyIndexRef = useRef<number>(0);
+  const currentTickRef = useRef<number>(0);
 
   // Mutable Game State
   const playerRef = useRef<Entity>({
@@ -94,7 +94,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
   const cameraXRef = useRef(0);
   const shakeRef = useRef(0);
 
-  // --- BGM System ---
+  // --- FFXIV Style 8-Bit Audio System ---
+  
   const stopBGM = useCallback(() => {
     bgmRunningRef.current = false;
     if (schedulerTimerRef.current) {
@@ -103,41 +104,66 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     }
   }, []);
 
-  const playBGMNote = (ctx: AudioContext, freq: number, time: number, duration: number, type: 'melody' | 'bass') => {
+  const playOscillator = (ctx: AudioContext, freq: number, time: number, duration: number, type: OscillatorType, vol: number, envelope: 'pluck' | 'pad' | 'perc' = 'pluck') => {
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
-    
-    if (type === 'bass') {
-        // Gritty Bass: Sawtooth with Lowpass Filter
-        osc.type = 'sawtooth';
-        const filter = ctx.createBiquadFilter();
-        filter.type = 'lowpass';
-        filter.frequency.setValueAtTime(150, time); // Deep
-        filter.frequency.linearRampToValueAtTime(100, time + duration);
-        osc.connect(filter);
-        filter.connect(gain);
-    } else {
-        // Melody: Sharp Square (Plucked)
-        osc.type = 'square';
-        osc.connect(gain);
-    }
+    const filter = ctx.createBiquadFilter();
 
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, time);
+
+    // Filter shaping for 8-bit authenticity
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(envelope === 'perc' ? 800 : 4000, time);
+
+    osc.connect(filter);
+    filter.connect(gain);
     gain.connect(ctx.destination);
-    
-    // Envelope
-    if (type === 'melody') {
+
+    if (envelope === 'pluck') {
         gain.gain.setValueAtTime(0, time);
-        gain.gain.linearRampToValueAtTime(0.08, time + 0.02); // Fast attack
-        gain.gain.exponentialRampToValueAtTime(0.001, time + duration); // Pluck decay
-    } else {
-        // Bass Driving Pulse
+        gain.gain.linearRampToValueAtTime(vol, time + 0.01);
+        gain.gain.exponentialRampToValueAtTime(0.01, time + duration);
+    } else if (envelope === 'pad') {
         gain.gain.setValueAtTime(0, time);
-        gain.gain.linearRampToValueAtTime(0.15, time + 0.05);
+        gain.gain.linearRampToValueAtTime(vol, time + 0.05);
+        gain.gain.linearRampToValueAtTime(vol * 0.8, time + 0.2);
         gain.gain.linearRampToValueAtTime(0, time + duration);
+    } else if (envelope === 'perc') {
+        // Kick/Bass hit
+        osc.frequency.setValueAtTime(freq * 2, time);
+        osc.frequency.exponentialRampToValueAtTime(freq * 0.5, time + 0.1);
+        gain.gain.setValueAtTime(vol, time);
+        gain.gain.exponentialRampToValueAtTime(0.001, time + 0.15);
     }
 
     osc.start(time);
     osc.stop(time + duration + 0.1);
+  };
+
+  const playNoise = (ctx: AudioContext, time: number, duration: number, vol: number) => {
+    const bufSize = ctx.sampleRate * duration;
+    const buffer = ctx.createBuffer(1, bufSize, ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < bufSize; i++) data[i] = Math.random() * 2 - 1;
+
+    const noise = ctx.createBufferSource();
+    noise.buffer = buffer;
+    const gain = ctx.createGain();
+    
+    // Snare filter
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'highpass';
+    filter.frequency.value = 1000;
+
+    noise.connect(filter);
+    filter.connect(gain);
+    gain.connect(ctx.destination);
+
+    gain.gain.setValueAtTime(vol, time);
+    gain.gain.exponentialRampToValueAtTime(0.01, time + duration);
+    
+    noise.start(time);
   };
 
   const startBGM = useCallback(() => {
@@ -146,63 +172,84 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     const ctx = audioCtxRef.current;
     bgmRunningRef.current = true;
     nextNoteTimeRef.current = ctx.currentTime + 0.1;
-    melodyIndexRef.current = 0;
+    currentTickRef.current = 0;
 
-    // "Moonlit Duel" Theme
-    // Tempo: Fast ~150 BPM.
-    // Scale: Phrygian Dominant (E F G# A B C D) - Dark, Mythic, Eastern
-    const SIXTH = 0.10; // 16th note duration approx
+    // "The Primal" - FFXIV Style Rock Boss Theme
+    // Tempo: 170 BPM (Very fast, driving)
+    const TEMPO = 170;
+    const SEC_PER_BEAT = 60 / TEMPO;
+    const SIXTEENTH = SEC_PER_BEAT / 4;
 
-    // Frequencies
-    const E2 = 82.41, F2 = 87.31, Gs2 = 103.83, A2 = 110.00, B2 = 123.47;
-    const E3 = 164.81, F3 = 174.61, Gs3 = 207.65, A3 = 220.00, B3 = 246.94, C4 = 261.63, D4 = 293.66, E4 = 329.63;
+    // Key: E Minor (Heroic/Rock)
+    const E2=82.41, G2=98.00, A2=110.00, B2=123.47, D3=146.83, E3=164.81, G3=196.00, A3=220.00, B3=246.94, 
+          C4=261.63, D4=293.66, E4=329.63, Fs4=369.99, G4=392.00, A4=440.00, B4=493.88, D5=587.33, E5=659.25;
 
-    const melody = [
-        // Phrase 1: The Driving Riff (E Phrygian)
-        { f: E3, d: SIXTH }, { f: E3, d: SIXTH }, { f: B3, d: SIXTH }, { f: E3, d: SIXTH },
-        { f: C4, d: SIXTH }, { f: B3, d: SIXTH }, { f: A3, d: SIXTH }, { f: Gs3, d: SIXTH },
-        
-        { f: E3, d: SIXTH }, { f: E3, d: SIXTH }, { f: D4, d: SIXTH }, { f: E3, d: SIXTH }, 
-        { f: F3, d: SIXTH }, { f: E3, d: SIXTH }, { f: D4, d: SIXTH }, { f: B3, d: SIXTH },
+    // Driving Rock Bass (Sawtooth) - 16 note loop
+    const bassLine = [
+        E2, E2, E2, G2, E2, E2, A2, B2,  E2, E2, E2, G2, E2, D3, B2, A2
+    ];
 
-        // Phrase 2: Tension
-        { f: E3, d: SIXTH }, { f: E3, d: SIXTH }, { f: E4, d: SIXTH }, { f: B3, d: SIXTH },
-        { f: D4, d: SIXTH }, { f: C4, d: SIXTH }, { f: B3, d: SIXTH }, { f: A3, d: SIXTH },
-
-        { f: Gs3, d: SIXTH * 2 }, { f: F3, d: SIXTH * 2 }, { f: E3, d: SIXTH * 4 }, // Resolve
-
-        // Phrase 3: High Variation
-        { f: B3, d: SIXTH }, { f: C4, d: SIXTH }, { f: D4, d: SIXTH }, { f: E4, d: SIXTH },
-        { f: F3, d: SIXTH * 2 }, { f: E4, d: SIXTH * 2 },
-        { f: D4, d: SIXTH }, { f: C4, d: SIXTH }, { f: B3, d: SIXTH }, { f: A3, d: SIXTH },
-        { f: Gs3, d: SIXTH * 4 }
+    // Soaring Melody (Square w/ Vibrato simulation via pitch bends later?)
+    // 32-step phrase
+    const melodyLine = [
+        // Phrase 1
+        E4, 0, B3, 0, G3, 0, E3, 0,  E4, 0, D4, 0, B3, 0, A3, G3, 
+        A3, 0, B3, 0, D4, 0, E4, 0,  G4, 0, Fs4, 0, D4, 0, B3, 0,
+        // Phrase 2 (High)
+        E5, 0, 0, 0, B4, 0, 0, 0,    G4, 0, A4, 0, B4, 0, D5, 0,
+        E5, 0, D5, 0, B4, 0, A4, 0,  G4, 0, E4, 0, 0, 0, 0, 0
     ];
 
     const schedule = () => {
         if (!bgmRunningRef.current || !audioCtxRef.current) return;
         
-        // Lookahead: Schedule notes
         while (nextNoteTimeRef.current < audioCtxRef.current.currentTime + 0.1) {
-             const note = melody[melodyIndexRef.current];
+             const t = nextNoteTimeRef.current;
+             const tick = currentTickRef.current;
              
-             // Melody
-             if (note.f > 0) {
-                playBGMNote(audioCtxRef.current, note.f, nextNoteTimeRef.current, note.d, 'melody');
+             // 1. Drums (Rock Beat: Kick on 1, 2&, 3. Snare on 2, 4)
+             const beatStep = tick % 16;
+             // Kick: 0, 4, 7, 10
+             if (beatStep === 0 || beatStep === 4 || beatStep === 7 || beatStep === 10) {
+                 playOscillator(ctx, 60, t, 0.1, 'triangle', 0.4, 'perc');
+             }
+             // Snare: 4, 12 (Backbeat)
+             if (beatStep === 4 || beatStep === 12) {
+                 playNoise(ctx, t, 0.08, 0.15);
+             }
+             // Hi-hat (every 2)
+             if (tick % 2 === 0) {
+                 playNoise(ctx, t, 0.01, 0.05);
              }
 
-             // Driving Bass (Pulse on beats)
-             if (melodyIndexRef.current % 4 === 0) {
-                 playBGMNote(audioCtxRef.current, E2, nextNoteTimeRef.current, SIXTH, 'bass');
+             // 2. Bass (Driving Sawtooth)
+             const bassNote = bassLine[tick % 16];
+             if (bassNote) {
+                 playOscillator(ctx, bassNote, t, SIXTEENTH * 0.8, 'sawtooth', 0.15, 'pluck');
              }
-             // Syncopated Bass
-             if (melodyIndexRef.current % 8 === 6) {
-                 playBGMNote(audioCtxRef.current, B2, nextNoteTimeRef.current, SIXTH, 'bass');
+
+             // 3. Melody (Lead Square)
+             // Melody array is 32 steps long
+             const melodyNote = melodyLine[tick % 32];
+             if (melodyNote > 0) {
+                 // Add simple vibrato effect by detuning slightly?
+                 // For 8-bit, just a clean square wave is clearer.
+                 // Longer duration for 'pad' like feel on long notes?
+                 const isLong = (melodyLine[(tick + 1) % 32] === 0);
+                 const dur = isLong ? SIXTEENTH * 2 : SIXTEENTH * 0.9;
+                 playOscillator(ctx, melodyNote, t, dur, 'square', 0.08, isLong ? 'pad' : 'pluck');
              }
-             
-             nextNoteTimeRef.current += note.d;
-             melodyIndexRef.current = (melodyIndexRef.current + 1) % melody.length;
+
+             // 4. Arp (Magical run) - Every 3rd tick to create polyrhythm feel
+             if (tick % 3 === 0) {
+                 const arpNotes = [E4, G4, B4, E5];
+                 const an = arpNotes[(tick/3) % 4];
+                 playOscillator(ctx, an, t, SIXTEENTH, 'triangle', 0.03, 'pluck');
+             }
+
+             nextNoteTimeRef.current += SIXTEENTH;
+             currentTickRef.current++;
         }
-        
         schedulerTimerRef.current = requestAnimationFrame(schedule);
     };
 
@@ -218,35 +265,22 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     if (audioCtxRef.current?.state === 'suspended') {
         audioCtxRef.current.resume();
     }
-    // Start BGM if playing
     if (gameState === GameState.PLAYING && !bgmRunningRef.current) {
         startBGM();
     }
   }, [gameState, startBGM]);
 
-  // Stop BGM when not playing
   useEffect(() => {
       if (gameState !== GameState.PLAYING) {
           stopBGM();
       }
   }, [gameState, stopBGM]);
 
-
+  // --- SFX System (FFXIV Style) ---
   const playSound = useCallback((type: 'jump' | 'dash' | 'attack_light' | 'attack_heavy' | 'hit' | 'block' | 'charge') => {
       if (!audioCtxRef.current) return;
       const ctx = audioCtxRef.current;
       const t = ctx.currentTime;
-
-      // Helper: Create White Noise Buffer
-      const createNoiseBuffer = () => {
-          const bufferSize = ctx.sampleRate * 0.5; 
-          const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
-          const data = buffer.getChannelData(0);
-          for (let i = 0; i < bufferSize; i++) {
-              data[i] = Math.random() * 2 - 1;
-          }
-          return buffer;
-      };
 
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
@@ -255,112 +289,110 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
       switch (type) {
           case 'jump':
-              // Snappy slide up
-              osc.type = 'square';
-              osc.frequency.setValueAtTime(100, t);
-              osc.frequency.exponentialRampToValueAtTime(350, t + 0.1);
-              gain.gain.setValueAtTime(0.08, t);
-              gain.gain.exponentialRampToValueAtTime(0.01, t + 0.1);
-              osc.start(t);
-              osc.stop(t + 0.1);
-              break;
-          case 'dash':
-              // High-pass filtered noise (Airy Whoosh)
-              const noiseDash = ctx.createBufferSource();
-              noiseDash.buffer = createNoiseBuffer();
-              const dashFilter = ctx.createBiquadFilter();
-              dashFilter.type = 'highpass';
-              dashFilter.frequency.setValueAtTime(800, t);
-              const dashGain = ctx.createGain();
-              
-              noiseDash.connect(dashFilter);
-              dashFilter.connect(dashGain);
-              dashGain.connect(ctx.destination);
-              
-              dashGain.gain.setValueAtTime(0.3, t);
-              dashGain.gain.exponentialRampToValueAtTime(0.01, t + 0.15);
-              noiseDash.start(t);
-              noiseDash.stop(t + 0.15);
-              break;
-          case 'attack_light':
-              // Filtered Sawtooth Sweep (Sharp Sword Sound)
-              osc.type = 'sawtooth';
-              const attFilter = ctx.createBiquadFilter();
-              attFilter.type = 'lowpass';
-              attFilter.frequency.setValueAtTime(2000, t);
-              attFilter.frequency.exponentialRampToValueAtTime(100, t + 0.1);
-              
-              osc.disconnect();
-              osc.connect(attFilter);
-              attFilter.connect(gain);
-              
-              osc.frequency.setValueAtTime(300, t); // Lower base pitch
-              osc.frequency.exponentialRampToValueAtTime(50, t + 0.1);
-              
-              gain.gain.setValueAtTime(0.15, t);
-              gain.gain.linearRampToValueAtTime(0, t + 0.1);
-              osc.start(t);
-              osc.stop(t + 0.1);
-              break;
-           case 'attack_heavy':
-              // Deep Charge Sweep
-              osc.type = 'sawtooth';
-              osc.frequency.setValueAtTime(100, t);
-              osc.frequency.exponentialRampToValueAtTime(600, t + 0.3); // Pitch up
-              
-              gain.gain.setValueAtTime(0.2, t);
-              gain.gain.linearRampToValueAtTime(0, t + 0.3);
+              // "Dragoon Jump" - Airy Whoosh + High Chime
+              // Noise part
+              playNoise(ctx, t, 0.2, 0.1);
+              // Tone part
+              osc.type = 'sine';
+              osc.frequency.setValueAtTime(200, t);
+              osc.frequency.linearRampToValueAtTime(800, t + 0.2);
+              gain.gain.setValueAtTime(0.1, t);
+              gain.gain.linearRampToValueAtTime(0, t + 0.2);
               osc.start(t);
               osc.stop(t + 0.3);
               break;
-          case 'hit':
-              // Crunch (Noise) + Punch (Sine Drop)
-              const hitNoise = ctx.createBufferSource();
-              hitNoise.buffer = createNoiseBuffer();
-              const hitFilter = ctx.createBiquadFilter();
-              hitFilter.type = 'lowpass';
-              hitFilter.frequency.setValueAtTime(1000, t);
-              const hitGain = ctx.createGain();
-              
-              hitNoise.connect(hitFilter);
-              hitFilter.connect(hitGain);
-              hitGain.connect(ctx.destination);
-              
-              hitGain.gain.setValueAtTime(0.5, t);
-              hitGain.gain.exponentialRampToValueAtTime(0.01, t + 0.1);
-              hitNoise.start(t);
-              hitNoise.stop(t + 0.1);
-              
-              // Punch
-              const punchOsc = ctx.createOscillator();
-              const punchGain = ctx.createGain();
-              punchOsc.type = 'square';
-              punchOsc.frequency.setValueAtTime(150, t);
-              punchOsc.frequency.exponentialRampToValueAtTime(40, t + 0.1);
-              punchGain.gain.setValueAtTime(0.3, t);
-              punchGain.gain.exponentialRampToValueAtTime(0.01, t + 0.1);
-              punchOsc.connect(punchGain);
-              punchGain.connect(ctx.destination);
-              punchOsc.start(t);
-              punchOsc.stop(t + 0.1);
+
+          case 'dash':
+              // "Aetherial Shift" - Sharp White Noise Sweep
+              const dBuf = ctx.createBuffer(1, ctx.sampleRate * 0.2, ctx.sampleRate);
+              const dd = dBuf.getChannelData(0);
+              for(let i=0; i<dBuf.length; i++) dd[i] = (Math.random() * 2 - 1);
+              const dSrc = ctx.createBufferSource();
+              dSrc.buffer = dBuf;
+              const dFilt = ctx.createBiquadFilter();
+              dFilt.type = 'bandpass';
+              dFilt.frequency.setValueAtTime(800, t);
+              dFilt.frequency.exponentialRampToValueAtTime(3000, t + 0.1);
+              dSrc.connect(dFilt);
+              dFilt.connect(gain);
+              gain.connect(ctx.destination);
+              gain.gain.setValueAtTime(0.3, t);
+              gain.gain.linearRampToValueAtTime(0, t + 0.15);
+              dSrc.start(t);
               break;
+
+          case 'attack_light':
+              // "Weapon Skill" - Sharp Metal + Magic tint
+              // Pulse wave swipe
+              osc.type = 'square'; 
+              osc.frequency.setValueAtTime(880, t);
+              osc.frequency.exponentialRampToValueAtTime(110, t + 0.1);
+              gain.gain.setValueAtTime(0.08, t);
+              gain.gain.exponentialRampToValueAtTime(0.01, t + 0.1);
+              osc.start(t);
+              osc.stop(t + 0.15);
+              break;
+
+           case 'attack_heavy':
+              // "Limit Break Start" - Heavy Sawtooth Growl
+              osc.type = 'sawtooth';
+              osc.frequency.setValueAtTime(220, t);
+              osc.frequency.linearRampToValueAtTime(55, t + 0.3);
+              gain.gain.setValueAtTime(0.2, t);
+              gain.gain.linearRampToValueAtTime(0, t + 0.3);
+              osc.start(t);
+              osc.stop(t + 0.35);
+              break;
+
+          case 'hit':
+              // "Crystal Shatter" - Critical Hit Sound
+              // High pitched random arpeggio simulation via noise modulation?
+              // Simple approach: 2 oscillators
+              
+              // Impact
+              osc.type = 'triangle';
+              osc.frequency.setValueAtTime(150, t);
+              osc.frequency.exponentialRampToValueAtTime(40, t + 0.1);
+              gain.gain.setValueAtTime(0.3, t);
+              gain.gain.exponentialRampToValueAtTime(0.01, t + 0.15);
+              osc.start(t);
+              osc.stop(t + 0.2);
+
+              // Shatter (High Sine FM)
+              const sOsc = ctx.createOscillator();
+              const sGain = ctx.createGain();
+              sOsc.type = 'sine';
+              sOsc.frequency.setValueAtTime(2000, t);
+              sOsc.frequency.linearRampToValueAtTime(1000, t + 0.1);
+              sGain.gain.setValueAtTime(0.1, t);
+              sGain.gain.exponentialRampToValueAtTime(0.01, t + 0.1);
+              sOsc.connect(sGain);
+              sGain.connect(ctx.destination);
+              sOsc.start(t);
+              sOsc.stop(t + 0.15);
+              break;
+
           case 'charge':
-              // Magical Tremolo
-              const magicOsc = ctx.createOscillator();
-              const magicGain = ctx.createGain();
-              magicOsc.connect(magicGain);
-              magicGain.connect(ctx.destination);
-              magicOsc.type = 'triangle';
+              // "Job Gauge Fill" - Rising chime
+              osc.type = 'sine';
+              osc.frequency.setValueAtTime(440, t);
+              osc.frequency.linearRampToValueAtTime(1760, t + 0.3); // 2 octaves up
               
-              magicOsc.frequency.setValueAtTime(200, t);
-              magicOsc.frequency.linearRampToValueAtTime(800, t + 0.2);
+              const tremolo = ctx.createOscillator();
+              tremolo.frequency.value = 20; // Fast flutter
+              const tremGain = ctx.createGain();
+              tremGain.gain.value = 0.5;
+              tremolo.connect(tremGain);
+              tremGain.connect(gain.gain);
               
-              magicGain.gain.setValueAtTime(0.05, t);
-              magicGain.gain.linearRampToValueAtTime(0.15, t + 0.1);
-              magicGain.gain.linearRampToValueAtTime(0, t + 0.2);
+              gain.gain.setValueAtTime(0.05, t);
+              gain.gain.linearRampToValueAtTime(0.1, t + 0.2);
+              gain.gain.linearRampToValueAtTime(0, t + 0.3);
               
-              magicOsc.start(t);
-              magicOsc.stop(t + 0.2);
+              osc.start(t);
+              osc.stop(t + 0.3);
+              tremolo.start(t);
+              tremolo.stop(t + 0.3);
               break;
       }
   }, []);
@@ -439,7 +471,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     setStamina(100);
     setScore(0);
     
-    // Attempt to start BGM if context is ready
     if (audioCtxRef.current?.state === 'running') {
         startBGM();
     }
@@ -469,7 +500,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
   // --- Helper: Collision Resolution ---
   const resolveEntityCollision = (e1: Entity, e2: Entity) => {
     if (e1.state === 'dodge' || e2.state === 'dodge') return;
-    // Collision Physics should NOT apply during hitstop freeze to prevent weird sliding
     if (e1.hitStop > 0 || e2.hitStop > 0) return; 
 
     if (e1.pos.x < e2.pos.x + e2.width &&
@@ -505,7 +535,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
   const update = useCallback(() => {
     if (gameState !== GameState.PLAYING) return;
 
-    // Screen Shake Decay (Always runs on Global Timeline)
     if (shakeRef.current > 0) shakeRef.current *= 0.9;
     if (shakeRef.current < 0.5) shakeRef.current = 0;
 
@@ -513,15 +542,11 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     const boss = bossRef.current;
 
     // --- 1. Player Logic ---
-    // Strict Local Timeline: If hitStop > 0, time is PAUSED for this entity.
     if (player.hitStop > 0) {
         player.hitStop--;
-        // SKIP all physics, inputs, animation, and cooldowns
     } else if (!player.isDead) {
-      // --- Active Timeline Starts ---
       const onGround = player.pos.y + player.height >= GROUND_Y;
       
-      // Cooldowns Management
       if (player.attackCooldown > 0) player.attackCooldown--;
       if (player.dodgeCooldown > 0) player.dodgeCooldown--;
       if (player.comboWindow > 0) player.comboWindow--;
@@ -533,7 +558,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       const isAttackPressed = keysRef.current['Space'] || keysRef.current['KeyJ'];
       const isDodgePressed = keysRef.current['ShiftLeft'] || keysRef.current['KeyK'] || keysRef.current['KeyL'];
       
-      // DODGE
       if (isDodgePressed && player.dodgeCooldown <= 0 && player.state !== 'dodge' && player.state !== 'hit') {
           player.state = 'dodge';
           player.animFrame = 0;
@@ -545,10 +569,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
           createParticles(player.pos.x + player.width/2, player.pos.y + player.height, '#fff', 5);
       }
       else if (player.state !== 'dodge' && player.state !== 'hit') {
-        
-        // CHARGING
         if (isAttackPressed) {
-           // Ensure we can charge during air_attack to buffer the next input
            if (player.state !== 'attack' && player.state !== 'heavy_attack') {
              player.chargeTimer++;
              if (player.chargeTimer % 8 === 0) playSound('charge'); 
@@ -557,16 +578,14 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
              }
            }
         }
-        // ATTACK TRIGGER
         else if (!isAttackPressed && player.chargeTimer > 0) {
             if (player.chargeTimer > CHARGE_THRESHOLD) {
-                // HEAVY ATTACK
                 player.state = 'heavy_attack';
                 player.attackCooldown = 30;
                 player.animFrame = 0;
                 player.vx = player.facingRight ? 12 : -12; 
                 player.comboCount = 0; 
-                player.hasDealtDamage = false; // Reset single hit flag
+                player.hasDealtDamage = false;
                 setStamina(0);
                 playSound('attack_heavy');
             } 
@@ -577,17 +596,15 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                 let allowAttack = true;
                 if (!onGround && isCurrentlyAirAttack) {
                     if (player.state === 'air_attack') {
-                        // Allow Cancel into Slam (Combo 4) ANYTIME
                         allowAttack = true;
                     } else {
-                        // Check legacy air hit flag (if chained from a different logic)
                         if (!player.hasHitInAir) allowAttack = false;
-                        else player.hasHitInAir = false; // Consume the flag
+                        else player.hasHitInAir = false; 
                     }
                 }
 
                 if (!isAlreadyAttacking || allowAttack) {
-                   player.hasDealtDamage = false; // Reset single hit flag for new attack
+                   player.hasDealtDamage = false; 
 
                    if (onGround) {
                        player.state = 'attack';
@@ -597,14 +614,9 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                            player.comboCount = 1;
                        }
                        
-                       // Ground Attack Logic
-                       if (player.comboCount === 3) {
-                           // Launcher - Lower Jump
-                           player.vy = -6.5; 
-                       }
+                       if (player.comboCount === 3) player.vy = -6.5; 
                        if (player.comboCount === 4) {
                            player.vy = -5; 
-                           // Single stage animation duration
                            player.attackCooldown = 30; 
                        }
                        
@@ -616,8 +628,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                        player.vx = player.facingRight ? lunge : -lunge;
                        playSound('attack_light');
                    } else {
-                       // Aerial Logic
-                       // Allow chaining Combo 3 (Launcher) or Air Attack into Combo 4 (Slam)
                        if ((player.comboCount === 3 || player.state === 'air_attack')) {
                             player.state = 'attack';
                             player.comboCount = 4; 
@@ -629,16 +639,14 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                             playSound('attack_heavy');
                        } 
                        else {
-                           // Height Check: Avoid triggering spin if too close to ground
                            const distToGround = GROUND_Y - (player.pos.y + player.height);
-                           if (distToGround > 50) { // Only air spin if we have height
+                           if (distToGround > 50) { 
                                 player.state = 'air_attack';
                                 player.comboCount = 0; 
                                 player.vy = -4;
                                 player.attackCooldown = 15;
                                 playSound('attack_light');
                            } else {
-                                // If too low, ignore
                                 player.chargeTimer = 0;
                                 return; 
                            }
@@ -646,7 +654,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                    }
                    
                    if (player.attackCooldown === 0) player.attackCooldown = 15; 
-                   // Ensure Combo 3 duration is enough for animation (6 frames * 3 speed = 18 ticks)
                    if (player.comboCount === 3) player.attackCooldown = 20; 
 
                    player.animFrame = 0;
@@ -658,7 +665,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
           if (!isAttackPressed) player.chargeTimer = 0;
       }
 
-      // --- Physics: Movement ---
       let moving = false;
       const isFinisher = player.state === 'attack' && player.comboCount === 4;
       const movementLocked = player.state === 'dodge' || player.state === 'heavy_attack' || isFinisher;
@@ -689,7 +695,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
          player.vx *= 0.90; 
       }
 
-      // Normal Jump
       if ((keysRef.current['ArrowUp'] || keysRef.current['KeyW']) && onGround && !movementLocked && player.state !== 'attack') {
         player.vy = JUMP_FORCE;
         playSound('jump');
@@ -697,7 +702,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       }
 
       if (player.state === 'air_attack' || (player.state === 'attack' && player.comboCount === 3)) {
-         player.vy += GRAVITY * 0.25; // Float during spin
+         player.vy += GRAVITY * 0.25; 
       } else {
          player.vy += GRAVITY;
       }
@@ -713,15 +718,14 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       if (player.pos.x < 0) player.pos.x = 0;
       if (player.pos.x > 1200) player.pos.x = 1200;
 
-      // --- Combat Hitbox Logic ---
       const isAttacking = (player.state === 'attack' || player.state === 'heavy_attack' || player.state === 'air_attack');
       let activeFrames = false;
       
       if (player.state === 'heavy_attack') activeFrames = player.animFrame >= 2 && player.animFrame <= 6; 
       else if (player.state === 'attack') {
           if (player.comboCount === 1 || player.comboCount === 2) activeFrames = player.animFrame === 1 || player.animFrame === 2;
-          else if (player.comboCount === 3) activeFrames = player.animFrame >= 1 && player.animFrame <= 5; // Active during the spin
-          else if (player.comboCount === 4) activeFrames = player.animFrame >= 5 && player.animFrame <= 10; // The Slam descent
+          else if (player.comboCount === 3) activeFrames = player.animFrame >= 1 && player.animFrame <= 5; 
+          else if (player.comboCount === 4) activeFrames = player.animFrame >= 5 && player.animFrame <= 10; 
       } 
       else if (player.state === 'air_attack') activeFrames = true;
 
@@ -729,7 +733,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
           let range = ATTACK_RANGE;
           let damage = ATTACK_DAMAGE;
           let isAir = player.state === 'air_attack' || (player.state === 'attack' && player.comboCount === 3);
-          let isMultiHit = player.state === 'air_attack'; // Only generic air attack is multi-hit now
+          let isMultiHit = player.state === 'air_attack'; 
 
           if (player.state === 'heavy_attack') {
               range = HEAVY_ATTACK_RANGE;
@@ -756,27 +760,20 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
               const dist = Math.sqrt(Math.pow(pCx - bCx, 2) + Math.pow(pCy - bCy, 2));
               if (dist < range) hit = true;
           } else {
-              // Standard Ground Hitbox
               let attackBoxX = player.facingRight ? player.pos.x + player.width : player.pos.x - range;
               let attackBoxW = range;
               let attackBoxY = player.pos.y;
               let attackBoxH = player.height;
 
-              // Special Handling for Slam (Combo 4) and Heavy Attack
-              // To fix missing ground targets when in air, and missing targets slightly behind
               if ((player.state === 'attack' && player.comboCount === 4) || player.state === 'heavy_attack') {
-                  const slamReach = 250; // Vertical reach downwards
+                  const slamReach = 250; 
                   attackBoxH += slamReach;
                   
-                  const backBuffer = 40; // Hits slightly behind center
-                  
-                  // Recalculate X/W to include back buffer
+                  const backBuffer = 40; 
                   if (player.facingRight) {
-                      // Start slightly behind the player
                       attackBoxX = player.pos.x - backBuffer;
                       attackBoxW = range + player.width + backBuffer;
                   } else {
-                      // If facing left, attack goes Left (from pos.x - range) to Right (pos.x + width + back)
                       attackBoxX = player.pos.x - range;
                       attackBoxW = range + player.width + backBuffer;
                   }
@@ -797,14 +794,12 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                   player.hasHitInAir = true;
               }
 
-              // Hit Logic
               let shouldRegisterHit = false;
               if (isMultiHit) {
                    if (player.attackCooldown <= 0) {
                        shouldRegisterHit = true;
                    }
               } else {
-                  // For single hits (Combos 1, 2, 3, 4, Heavy), we use the hasDealtDamage flag
                    if (!player.hasDealtDamage) {
                        shouldRegisterHit = true;
                    }
@@ -825,37 +820,33 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                  createParticles(boss.pos.x + boss.width/2, boss.pos.y + boss.height/2, pColor, 12); 
                  playSound('hit');
 
-                 // --- Hitstop (Timescale Freeze) ---
-                 let stopDuration = 10; // Standard snappy feel
+                 let stopDuration = 10; 
                  let shakeInt = 5;
 
                  if (player.state === 'heavy_attack' || player.comboCount === 4) {
-                     stopDuration = 15; // Heavy Impact
+                     stopDuration = 15; 
                      shakeInt = 20;
                      createParticles(boss.pos.x + boss.width/2, boss.pos.y + boss.height, '#fff', 20, 15);
                  } else if (isMultiHit) {
-                     stopDuration = 8; // Stutter Feel for spins
+                     stopDuration = 8; 
                      shakeInt = 5;
                  }
 
-                 player.hitStop = stopDuration; // Player pauses
-                 boss.hitStop = stopDuration + 2; // Boss pauses slightly longer
-                 shakeRef.current = shakeInt; // Screen shake
+                 player.hitStop = stopDuration; 
+                 boss.hitStop = stopDuration + 2; 
+                 shakeRef.current = shakeInt; 
 
                  setScore(s => s + Math.floor(damage));
                  
                  if (isMultiHit) {
-                     // 1 hit per rotation (6 frames * 2 speed = 12 ticks)
                      player.attackCooldown = 18; 
                  } else {
-                     // For single hits, mark as dealt
                      player.hasDealtDamage = true;
                  }
               }
           }
       }
 
-      // --- Player Animation State Updates ---
       player.animTimer++;
 
       if (player.state === 'hit') {
@@ -871,7 +862,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
          player.state = 'idle';
       }
       else if (isAttacking && player.attackCooldown <= 0 && !isFinisher && player.state !== 'heavy_attack' && player.state !== 'air_attack' && player.comboCount !== 3) {
-        // Normal attack cleanup
         player.state = 'idle';
         player.comboWindow = COMBO_WINDOW_FRAMES;
       }
@@ -885,13 +875,10 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         }
       }
       
-      // Special exit conditions for Multi-hit states
       if (player.state === 'air_attack' || (player.state === 'attack' && player.comboCount === 3)) {
-           // Combo 3: Single Rotation (6 frames)
            const limit = player.comboCount === 3 ? 6 : 18;
            if (player.animFrame > limit) { 
                if (player.comboCount === 3) {
-                   // Auto-chain to Combo 4 (Slam)
                    player.state = 'attack';
                    player.comboCount = 4;
                    player.vy = -5; 
@@ -902,7 +889,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                    player.hasDealtDamage = false;
                    playSound('attack_heavy');
                } else {
-                   // For standard air attack, return to idle without chaining to Combo 3/4
                    player.state = 'idle';
                    player.comboWindow = COMBO_WINDOW_FRAMES;
                }
@@ -916,7 +902,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       let animSpeed = 8;
       if (player.state === 'run') animSpeed = 5;
       if (player.state === 'attack') {
-          if (player.comboCount === 3) animSpeed = 3; // 6 frames for 360 deg
+          if (player.comboCount === 3) animSpeed = 3; 
           else if (player.comboCount === 4) animSpeed = 1; 
           else animSpeed = 5;
       }
@@ -933,29 +919,24 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       if (player.dodgeCooldown < 30) {
          setStamina(s => Math.min(100, s + 0.5));
       }
-      // --- Active Timeline Ends ---
     }
 
     // --- 2. Boss Logic ---
     if (boss && !boss.isDead) {
-      // Strict Local Timeline
       if (boss.hitStop > 0) {
           boss.hitStop--;
-          // SKIP physics/ai/anim
       } else {
         boss.facingRight = player.pos.x > boss.pos.x;
         const distance = Math.abs(player.pos.x - boss.pos.x);
         const PREFERRED_DISTANCE = 220;
         
         if (boss.state !== 'hit') {
-            // Jump Smash Attack 
             if (boss.state === 'run' && distance < 250 && distance > 100 && Math.random() < 0.02 && boss.attackCooldown <= 0) {
                 boss.state = 'jump_smash'; 
                 boss.vy = -15; 
                 boss.vx = boss.facingRight ? 8 : -8;
                 boss.attackCooldown = 150;
             }
-            // Standoff Logic (Transition)
             else if (boss.state === 'run') {
                 if (distance < 350 && distance > 200 && Math.random() < 0.05) {
                   boss.state = 'standoff';
@@ -1042,8 +1023,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         } else if (boss.state === 'hit') {
             boss.vx *= 0.9;
             if (Math.abs(boss.vx) < 0.1) boss.state = 'idle';
-            
-            // Hit recovery
              if (boss.state === 'hit' && boss.animTimer > 20) {
                   boss.state = 'idle';
              }
@@ -1073,12 +1052,10 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       }
     }
 
-    // 3. Entity Collision (Only when both active or dodging, but logic handled above)
     if (boss && !boss.isDead && !player.isDead) {
         resolveEntityCollision(player, boss);
     }
 
-    // 4. Particles & Camera (Global Timeline)
     for (let i = particlesRef.current.length - 1; i >= 0; i--) {
       const p = particlesRef.current[i];
       p.x += p.vx;
@@ -1125,7 +1102,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     ctx.fillRect(Math.round(x), Math.round(y), w, h);
   };
 
-  // Easing functions for animation smoothness
   const lerp = (start: number, end: number, t: number) => start * (1 - t) + end * t;
   const easeOutQuad = (t: number) => t * (2 - t);
   const easeInOutQuad = (t: number) => t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
@@ -1147,14 +1123,12 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
   const drawPlayer = (ctx: CanvasRenderingContext2D, p: Entity) => {
     const { width: w, height: h, state, animFrame, comboCount, hitStop } = p;
     
-    // Calculate smoothed frame for interpolation (e.g., 1.5 instead of jumping 1 -> 2)
     const speed = getAnimSpeed(p);
     const smoothT = Math.min(1, p.animTimer / speed);
     const smoothFrame = animFrame + smoothT;
 
     ctx.save();
     
-    // Entity Shake
     let shakeX = 0;
     let shakeY = 0;
     if (state === 'hit' && hitStop > 0) {
@@ -1162,13 +1136,11 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         shakeY = (Math.random() - 0.5) * 4;
     }
     
-    // Base Transform (Feet Center)
     ctx.translate(Math.round(p.pos.x + w / 2 + shakeX), Math.round(p.pos.y + h + shakeY));
     if (!p.facingRight) {
         ctx.scale(-1, 1);
     }
 
-    // Define Body Parts Colors
     const cFur = '#8d5c2a';
     const cArmor = '#d97706'; 
     const cCloth = '#1c1917'; 
@@ -1177,7 +1149,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     const cGold = '#fbbf24'; 
     const cStaff = '#262626';
 
-    // --- Render States ---
     if (state === 'idle') {
         const bob = Math.sin(Date.now() / 200) * 1; 
         drawRect(ctx, -14, -48 + bob, 8, 35, cRed); 
@@ -1190,7 +1161,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         const cycle = animFrame % 4; 
         const legL = cycle === 0 ? -8 : (cycle === 2 ? 8 : 0);
         const bob = cycle % 2 !== 0 ? -2 : 0;
-        // Tilt body forward slightly while running
         ctx.save();
         ctx.rotate(0.1); 
         drawRect(ctx, -20 - (cycle===0?4:0), -45 + bob, 12, 25, cRed);
@@ -1201,7 +1171,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         
         drawRect(ctx, -4 + legL, -15, 6, 15, cCloth);
         
-        // Staff bob
         ctx.save();
         ctx.translate(0, -30);
         ctx.rotate(0.4 + Math.sin(Date.now()/100)*0.1);
@@ -1221,17 +1190,12 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     }
     else if (state === 'attack') {
         if (comboCount === 1) {
-             // Combo 1: Thrust (Lunge)
-             // Frames 0 -> 1 (Hit) -> 2 (Recov)
-             // Normalized time 0..3
              const t = Math.min(3, smoothFrame);
              
-             // Body Lean: 0 -> 0.2 -> 0
              let lean = 0;
              if (t < 1) lean = lerp(0, 0.25, easeOutQuad(t));
              else lean = lerp(0.25, 0, (t-1)/2);
 
-             // Arm Extension: 0 -> 40 -> 0
              let ext = 0;
              if (t < 1.2) ext = lerp(0, 40, easeOutQuad(t/1.2));
              else ext = lerp(40, 0, (t-1.2)/1.8);
@@ -1239,31 +1203,24 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
              ctx.save();
              ctx.rotate(lean);
              
-             // Body
              drawRect(ctx, -15, -45, 15, 20, cRed);
              drawRect(ctx, -9, -35, 18, 25, cArmor);
              drawRect(ctx, -5, -45, 14, 12, cFur);
              drawRect(ctx, -3, -43, 9, 8, cSkin);
              
-             // Arm/Staff
-             ctx.translate(0, -35); // Shoulder Pivot
-             // Slight angle wobble for stab
+             ctx.translate(0, -35); 
              ctx.rotate(0.1 - ext * 0.002);
              
-             drawRect(ctx, 10 + ext, -2, 70, 6, cGold); // Gold Tip
-             drawRect(ctx, -10 + ext, -2, 30, 5, cStaff); // Handle
+             drawRect(ctx, 10 + ext, -2, 70, 6, cGold); 
+             drawRect(ctx, -10 + ext, -2, 30, 5, cStaff); 
              
              ctx.restore();
         }
         else if (comboCount === 2) {
-             // Combo 2: Sweep (Horizontal Slash)
-             // Frames 0 -> 3
              const t = Math.min(3, smoothFrame);
              
-             // Body Twist: -0.1 -> 0.2 -> 0
              let twist = lerp(-0.1, 0.3, easeInOutQuad(t/2.5));
              
-             // Staff Angle: -2.2 (Back) -> 1.5 (Front)
              const startAngle = -2.2;
              const endAngle = 1.5;
              let angle = lerp(startAngle, endAngle, easeInOutQuad(Math.min(1, t/2)));
@@ -1276,7 +1233,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
              drawRect(ctx, -5, -45, 14, 12, cFur);
              drawRect(ctx, -3, -43, 9, 8, cSkin);
              
-             // Arm Pivot
              ctx.translate(0, -35);
              ctx.rotate(angle);
              
@@ -1286,16 +1242,12 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
              ctx.restore();
         }
         else if (comboCount === 3) {
-            // Combo 3: Forward Spin (360 deg)
-            // Frames 0 -> 6 (Speed 3)
-            // Smooth angle
             const maxFrame = 6;
             const t = Math.min(maxFrame, smoothFrame);
             const angle = (t / maxFrame) * (Math.PI * 2);
 
-            ctx.translate(0, -35); // Pivot Center Body
+            ctx.translate(0, -35); 
             
-            // Smear arc
             ctx.globalCompositeOperation = 'lighter';
             ctx.fillStyle = cGold;
             ctx.globalAlpha = 0.6;
@@ -1307,7 +1259,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
             ctx.globalCompositeOperation = 'source-over';
 
             ctx.save();
-            ctx.rotate(angle); // Rotate the whole body/staff
+            ctx.rotate(angle); 
             
             ctx.globalCompositeOperation = 'lighter';
             ctx.shadowColor = '#fbbf24';
@@ -1325,14 +1277,12 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
             drawRect(ctx, -4, -70, 8, 140, cGold);
             ctx.restore();
         }
-        // Combo 4: Leveraged Slam
         else if (comboCount === 4) {
-            const t = smoothFrame; // 0 to 20
+            const t = smoothFrame; 
 
             ctx.save();
-            // Body Lean
             let lean = -0.4; 
-            if (t > 5) lean = lerp(-0.4, 0.4, easeOutQuad(Math.min(1, (t-5)/5))); // Lean forward during slam
+            if (t > 5) lean = lerp(-0.4, 0.4, easeOutQuad(Math.min(1, (t-5)/5))); 
             ctx.rotate(lean); 
 
             drawRect(ctx, -25, -45, 15, 20, cRed);
@@ -1342,28 +1292,21 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
             ctx.restore();
 
             ctx.save();
-            ctx.translate(0, -35); // Shoulder Pivot
+            ctx.translate(0, -35); 
             
             let angle = 0;
-            const startAngle = -2.5; // High Back (Continuing from spin)
-            const endAngle = 1.8; // Ground
+            const startAngle = -2.5; 
+            const endAngle = 1.8; 
             
-            // Phase 1: Windup/Inertia (0-5)
             if (t <= 5) {
-                // Interpolate into the hold position instead of snapping
-                // Assume start from 0 (upright) if coming from idle, or carry momentum?
-                // Constant -2.5 is fine, but maybe add a little "heave"
                 const heave = Math.sin(t * 0.5) * 0.1;
                 angle = startAngle + heave;
             } 
-            // Phase 2: Slam (5-10)
             else if (t <= 10) {
-                 // Quadratic ease-in for heavy acceleration
                  const progress = (t - 5) / 5;
                  const ease = progress * progress; 
                  angle = lerp(startAngle, endAngle, ease);
                  
-                 // Slam Smear
                  ctx.globalCompositeOperation = 'lighter';
                  ctx.fillStyle = cGold;
                  ctx.globalAlpha = 0.8;
@@ -1375,10 +1318,9 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                  ctx.globalCompositeOperation = 'source-over';
                  ctx.globalAlpha = 1.0;
             }
-            // Phase 3: Impact Hold (10+)
             else {
                  angle = endAngle;
-                 if (t < 14) angle += (Math.random()-0.5)*0.1; // shake
+                 if (t < 14) angle += (Math.random()-0.5)*0.1; 
             }
 
             ctx.rotate(angle);
@@ -1392,7 +1334,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         }
     }
     else if (state === 'air_attack') {
-        // Continuous Spin
         const angle = (smoothFrame * 60) * (Math.PI / 180); 
         ctx.translate(0, -25);
         ctx.rotate(angle);
@@ -1417,15 +1358,13 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     else if (state === 'heavy_attack') {
         const t = Math.min(8, smoothFrame);
         
-        // Charging Pose
         ctx.save();
-        ctx.transform(1, 0, -0.3, 1, 0, 0); // Skew
+        ctx.transform(1, 0, -0.3, 1, 0, 0); 
         drawRect(ctx, -10, -38, 20, 38, cArmor);
         ctx.restore();
         
         const maxLen = 300;
         let currentLen = 40;
-        // Grow smoothly
         if (t < 6) currentLen = lerp(40, maxLen, easeOutQuad(t/6)); 
         else currentLen = maxLen;
 
@@ -1478,12 +1417,10 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
     ctx.save();
     
-    // Screen Shake (Camera)
     const shakeX = (Math.random() - 0.5) * shakeRef.current;
     const shakeY = (Math.random() - 0.5) * shakeRef.current;
     ctx.translate(-cameraXRef.current + shakeX, shakeY);
 
-    // Moon
     ctx.shadowColor = '#f8fafc'; 
     ctx.shadowBlur = 60;
     ctx.fillStyle = '#e5e7eb'; 
@@ -1492,7 +1429,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     ctx.fill();
     ctx.shadowBlur = 0; 
 
-    // Floor
     ctx.fillStyle = '#000'; 
     ctx.fillRect(0, GROUND_Y, 2000, 200);
     ctx.fillStyle = '#27272a'; 
@@ -1519,7 +1455,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         ctx.translate(bossShakeX, bossShakeY);
 
         if (b.state === 'hit' && b.hitStop > 0) {
-             // Flash white heavily during hit freeze
              ctx.fillStyle = '#fff'; 
              ctx.fillRect(bx, by, b.width, b.height);
         } else if (b.state === 'hit') {
@@ -1559,7 +1494,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         ctx.globalAlpha = part.life;
         ctx.fillStyle = part.color;
         ctx.shadowColor = part.color;
-        ctx.shadowBlur = 15; // Increased glow
+        ctx.shadowBlur = 15; 
         ctx.fillRect(part.x, part.y, part.size, part.size);
         ctx.shadowBlur = 0;
         ctx.globalAlpha = 1.0;
