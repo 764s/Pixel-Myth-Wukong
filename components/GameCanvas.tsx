@@ -10,25 +10,20 @@ const MAX_SPEED = 5;
 const JUMP_FORCE = -13;
 const GROUND_Y = 400;
 
-const ATTACK_RANGE = 90;
-const ATTACK_DAMAGE = 12; 
-const COMBO_2_DAMAGE = 18;
-// COMBO 3 DAMAGE is now dynamic based on debug params
-const COMBO_4_SLAM_DAMAGE = 45; // Main slam damage
-const HEAVY_ATTACK_DAMAGE = 60;
-const HEAVY_ATTACK_RANGE = 300; 
-const AIR_ATTACK_DAMAGE = 8; // Lower damage per tick for multi-hit
+// Attack Constants are now largely dynamic via Debug Params
+// Keeping defaults for reference or fallback
+const AIR_ATTACK_DAMAGE = 8; 
 
 const DODGE_SPEED = 18; 
 const DODGE_COOLDOWN = 40;
 const DODGE_STAMINA_COST = 20;
 
 const BOSS_DAMAGE = 15;
-const BOSS_KOWTOW_DAMAGE = 25; // High damage for the slam
+const BOSS_KOWTOW_DAMAGE = 25; 
 const CHARGE_THRESHOLD = 20; 
 const COMBO_WINDOW_FRAMES = 50; 
 
-const IMMOBILIZE_BREAK_THRESHOLD = 80; // Damage needed to break the spell early
+const IMMOBILIZE_BREAK_THRESHOLD = 80; 
 
 // Pixel Art Resolution (Physics is 800x450, Canvas is 480x270)
 const LOGICAL_WIDTH = 800;
@@ -46,17 +41,15 @@ const easeInCubic = (t: number) => t * t * t;
 // Combo 4 Configuration
 const C4_START_ANGLE = -2.5;
 const C4_END_ANGLE = 1.8;
-const C4_STAFF_LENGTH = 150;
 
 // Shared logic to get current staff angle based on Continuous Time (t)
-// t = animFrame + (animTimer / speed)
 const getCombo4AngleFromT = (t: number) => {
     // Active swing is frames 5 to 10
-    if (t <= 5) return C4_START_ANGLE; // Windup
-    if (t >= 10) return C4_END_ANGLE; // End
+    if (t <= 5) return C4_START_ANGLE; 
+    if (t >= 10) return C4_END_ANGLE; 
     
-    const progress = (t - 5) / 5; // 0.0 to 1.0
-    const ease = easeInCubic(progress); // Accelerate downwards
+    const progress = (t - 5) / 5; 
+    const ease = easeInCubic(progress); 
     return lerp(C4_START_ANGLE, C4_END_ANGLE, ease);
 };
 
@@ -93,13 +86,44 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
   // --- DEBUG PARAMS ---
   const debugParamsRef = useRef({
-      // Attack 4 (Fan) & Trails
+      // Combo 1 Logic
+      c1Damage: 12,
+      c1Stun: 4,
+      c1Shake: 2,
+
+      // Combo 2 Logic
+      c2Damage: 18,
+      c2Stun: 6,
+      c2Shake: 4,
+
+      // Attack 4 (Fan) Visuals
       trailDecay: 0.2,
       trailStep: 0.2,
       fanFade: 0.2,
-      fanBrightness: 1.0, 
-      fanOpacity: 0.1,    
+      fanBrightness: 1.0, // Glow Intensity
+      fanDensity: 0.3,    // Concentration (Backing opacity)
+      fanOpacity: 0.1,    // Master Opacity
       
+      // Attack 4 (Fan) Logic
+      c4Length: 150,
+      c4Damage: 45,
+      c4Knockback: 8,
+      c4Stun: 12,
+      c4Shake: 20,
+      c4Slide: 2, 
+      
+      // Heavy Attack (Charge) Visuals
+      heavyWidth: 12,
+      heavyGlow: 1.0,
+      heavyOpacity: 1.0,
+
+      // Heavy Attack (Charge) Logic
+      heavyDamage: 60,
+      heavyRange: 300,
+      heavyKnockback: 12,
+      heavyStun: 15,
+      heavyShake: 15, // Default matches Stun
+
       // Attack 3 (Spin Cross) Visuals
       c3Radius: 100,      
       c3Width: 12,        
@@ -108,12 +132,12 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       c3Opacity: 0.3,     
       
       // Attack 3 Compensation / Blur
-      c3BlurSteps: 1,     // Updated Default: 1
-      c3BlurFade: 0.1,    // Updated Default: 0.1
+      c3BlurSteps: 1,     
+      c3BlurFade: 0.1,    
 
       // Attack 3 Background (Disc)
-      c3BgBrightness: 0.1, // Updated Default: 0.1
-      c3BgOpacity: 0,      // Updated Default: 0
+      c3BgBrightness: 0.1, 
+      c3BgOpacity: 0,      
 
       // Attack 3 (Spin Cross) Logic
       c3Rotations: 2,     
@@ -696,7 +720,11 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     // Debug values
     const { 
         trailDecay, trailStep, bossBehavior, infiniteHealth, infinitePlayerHealth,
-        c3Rotations, c3Speed, c3ExtraHits, c3TotalDamage, c3Stun, c3Radius
+        c1Damage, c1Stun, c1Shake,
+        c2Damage, c2Stun, c2Shake,
+        c3Rotations, c3Speed, c3ExtraHits, c3TotalDamage, c3Stun, c3Radius,
+        c4Length, c4Damage, c4Knockback, c4Stun, c4Shake, c4Slide,
+        heavyDamage, heavyRange, heavyKnockback, heavyStun, heavyShake
     } = debugParamsRef.current;
 
     // --- 1. Player Logic ---
@@ -857,19 +885,10 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                 playSound('attack_heavy');
             } 
             else {
-                const isAlreadyAttacking = player.state === 'attack' || player.state === 'heavy_attack' || player.state === 'air_attack';
-                const isCurrentlyAirAttack = player.state === 'air_attack' || (player.state === 'attack' && player.comboCount === 3);
+                const isAlreadyAttacking = player.state === 'attack' || player.state === 'heavy_attack';
                 
                 let allowAttack = true;
-                if (!onGround && isCurrentlyAirAttack) {
-                    if (player.state === 'air_attack') {
-                        allowAttack = true;
-                    } else {
-                        if (!player.hasHitInAir) allowAttack = false;
-                        else player.hasHitInAir = false; 
-                    }
-                }
-
+                
                 if (!isAlreadyAttacking || allowAttack) {
                    player.hasDealtDamage = false; 
 
@@ -884,15 +903,18 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                        if (player.comboCount === 3) player.vy = -5.5; 
                        if (player.comboCount === 4) {
                            player.vy = -5; 
+                           player.vx = player.facingRight ? c4Slide : -c4Slide; // Apply forward slide
                            player.attackCooldown = 30; 
                        }
                        
                        let lunge = 3;
                        if (player.comboCount === 2) lunge = 6;
                        if (player.comboCount === 3) lunge = 4;
-                       if (player.comboCount === 4) lunge = 2;
+                       if (player.comboCount === 4) lunge = 2; // Default base lunge, overridden by c4Slide above
 
-                       player.vx = player.facingRight ? lunge : -lunge;
+                       if (player.comboCount !== 4) {
+                            player.vx = player.facingRight ? lunge : -lunge;
+                       }
                        playSound('attack_light');
                        
                        // Init Combo 3 tracker
@@ -900,28 +922,23 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                            c3HitsRef.current = 0;
                        }
                    } else {
-                       if ((player.comboCount === 3 || player.state === 'air_attack')) {
+                       // AIR ATTACK LOGIC REPLACEMENT
+                       const distToGround = GROUND_Y - (player.pos.y + player.height);
+                       const minAirHeight = 30; // Threshold to trigger air slam
+
+                       if (distToGround > minAirHeight) {
                             player.state = 'attack';
-                            player.comboCount = 4; 
+                            player.comboCount = 4; // Trigger Slam
                             player.vy = -5; 
-                            player.vx = 0;
+                            player.vx = player.facingRight ? c4Slide : -c4Slide; // Apply forward slide
                             player.attackCooldown = 30;
                             player.animFrame = 0;
                             player.hasDealtDamage = false;
                             playSound('attack_heavy');
                        } 
                        else {
-                           const distToGround = GROUND_Y - (player.pos.y + player.height);
-                           if (distToGround > 50) { 
-                                player.state = 'air_attack';
-                                player.comboCount = 0; 
-                                player.vy = -4;
-                                player.attackCooldown = 15;
-                                playSound('attack_light');
-                           } else {
-                                player.chargeTimer = 0;
-                                return; 
-                           }
+                            player.chargeTimer = 0;
+                            return; 
                        }
                    }
                    
@@ -976,7 +993,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         createParticles(player.pos.x + player.width/2, player.pos.y + player.height, '#78350f', 5); 
       }
 
-      if (player.state === 'air_attack' || (player.state === 'attack' && player.comboCount === 3)) {
+      if (player.state === 'attack' && player.comboCount === 3) {
          player.vy += GRAVITY * 0.25; 
       } else {
          player.vy += GRAVITY;
@@ -993,7 +1010,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       if (player.pos.x < 0) player.pos.x = 0;
       if (player.pos.x > 1200) player.pos.x = 1200;
 
-      const isAttacking = (player.state === 'attack' || player.state === 'heavy_attack' || player.state === 'air_attack');
+      const isAttacking = (player.state === 'attack' || player.state === 'heavy_attack');
       let activeFrames = false;
       
       // --- COMBO 3 DYNAMIC LOGIC ---
@@ -1011,42 +1028,37 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
           }
           else if (player.comboCount === 4) activeFrames = player.animFrame >= 5 && player.animFrame <= 10; 
       } 
-      else if (player.state === 'air_attack') activeFrames = true;
 
       if (isAttacking && activeFrames && boss && !boss.isDead) {
-          let range = ATTACK_RANGE;
-          let damage = ATTACK_DAMAGE;
-          let isAir = player.state === 'air_attack' || (player.state === 'attack' && player.comboCount === 3);
-          let isMultiHit = player.state === 'air_attack' || (player.state === 'attack' && player.comboCount === 3);
+          let range = 90; // Default fallback
+          let damage = 10; // Default fallback
+          let isAir = (player.state === 'attack' && player.comboCount === 3); // Check if doing spin in air (roughly)
+          let isMultiHit = (player.state === 'attack' && player.comboCount === 3);
 
           if (player.state === 'heavy_attack') {
-              range = HEAVY_ATTACK_RANGE;
-              damage = HEAVY_ATTACK_DAMAGE;
+              range = heavyRange; // Use debug param
+              damage = heavyDamage; // Use debug param
           } else if (isAir) {
-              if (player.state === 'attack' && player.comboCount === 3) {
-                  // --- COMBO 3 PARAMETERS ---
-                  range = c3Radius; // Use debug parameter for range
-                  const totalHits = 1 + c3ExtraHits;
-                  damage = c3TotalDamage / totalHits; // Distribute damage
+              // --- COMBO 3 PARAMETERS ---
+              range = c3Radius; // Use debug param for range
+              const totalHits = 1 + c3ExtraHits;
+              damage = c3TotalDamage / totalHits; // Distribute damage
 
-                  // Multi-hit Reset Logic
-                  // Divide total frames into segments. At start of each segment, reset damage.
-                  const segmentLen = c3TotalFrames / totalHits;
-                  const currentHitIndex = Math.floor(player.animFrame / segmentLen);
-                  
-                  if (currentHitIndex > c3HitsRef.current) {
-                      player.hasDealtDamage = false;
-                      c3HitsRef.current = currentHitIndex;
-                  }
-              } else {
-                  damage = AIR_ATTACK_DAMAGE;
-                  range = ATTACK_RANGE * 1.5;
+              // Multi-hit Reset Logic
+              // Divide total frames into segments. At start of each segment, reset damage.
+              const segmentLen = c3TotalFrames / totalHits;
+              const currentHitIndex = Math.floor(player.animFrame / segmentLen);
+              
+              if (currentHitIndex > c3HitsRef.current) {
+                  player.hasDealtDamage = false;
+                  c3HitsRef.current = currentHitIndex;
               }
           } else if (player.state === 'attack') {
-              if (player.comboCount === 2) { damage = COMBO_2_DAMAGE; range = ATTACK_RANGE * 1.2; }
+              if (player.comboCount === 1) { damage = c1Damage; range = 90; }
+              if (player.comboCount === 2) { damage = c2Damage; range = 110; }
               if (player.comboCount === 4) {
-                  damage = COMBO_4_SLAM_DAMAGE;
-                  range = ATTACK_RANGE * 2.0;
+                  damage = c4Damage; // Use Debug Param
+                  range = 180; // Approximate check, actual collision uses sweep
               }
           }
           
@@ -1063,7 +1075,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
                const pivotX = player.pos.x + player.width/2;
                const pivotY = player.pos.y + player.height - 35;
-               const checkPoints = [40, 80, 120, 150]; 
+               // Adjust checkpoints based on c4Length
+               const checkPoints = [c4Length * 0.3, c4Length * 0.6, c4Length * 0.9, c4Length]; 
                
                for (let s = 0; s <= sweepSteps; s++) {
                    if (hit) break; 
@@ -1105,15 +1118,17 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                   let attackBoxH = player.height;
 
                   if (player.state === 'heavy_attack') {
-                      const slamReach = 250; 
-                      attackBoxH += slamReach;
-                      const backBuffer = 40; 
+                      const slamReach = heavyRange; // Match logic to visual length exactly
+                      attackBoxH += 50; // Some vertical forgiveness
+                      
                       if (player.facingRight) {
-                          attackBoxX = player.pos.x - backBuffer;
-                          attackBoxW = range + player.width + backBuffer;
+                          // Start from center of player
+                          attackBoxX = player.pos.x + (player.width / 2);
+                          attackBoxW = slamReach;
                       } else {
-                          attackBoxX = player.pos.x - range;
-                          attackBoxW = range + player.width + backBuffer;
+                          // Start from center and go left
+                          attackBoxX = (player.pos.x + player.width / 2) - slamReach;
+                          attackBoxW = slamReach;
                       }
                   }
 
@@ -1129,7 +1144,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
           }
 
           if (hit) {
-              if (isAir || player.state === 'air_attack') {
+              if (isAir) {
                   player.hasHitInAir = true;
               }
 
@@ -1200,8 +1215,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                     }
                  } else {
                      let kForce = 0; 
-                     if (player.comboCount === 4) kForce = 8; 
-                     if (player.state === 'heavy_attack') kForce = 12; 
+                     if (player.comboCount === 4) kForce = c4Knockback; // Use Debug Param
+                     if (player.state === 'heavy_attack') kForce = heavyKnockback; // Use Debug Param
                      
                      boss.vx = player.facingRight ? kForce : -kForce;
                      
@@ -1211,12 +1226,12 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                      const shouldStagger = player.state === 'heavy_attack' || player.comboCount === 4;
 
                      if (player.state === 'heavy_attack') {
-                         stopDuration = 15; 
-                         shakeInt = 20;
+                         stopDuration = heavyStun; // Use Debug Param
+                         shakeInt = heavyShake; // Use Debug Param
                          createParticles(boss.pos.x + boss.width/2, boss.pos.y + boss.height, '#fff', 20, 15);
                      } else if (player.comboCount === 4) {
-                         stopDuration = 12;
-                         shakeInt = 20;
+                         stopDuration = c4Stun; // Use Debug Param
+                         shakeInt = c4Shake; // Use Debug Param
                          createParticles(boss.pos.x + boss.width/2, boss.pos.y + boss.height, '#fff', 20, 15);
                      } else if (isMultiHit) {
                          if (player.comboCount === 3) {
@@ -1226,8 +1241,12 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                              stopDuration = 8; 
                              shakeInt = 5;
                          }
-                     } else if (player.comboCount === 1 || player.comboCount === 2) {
-                         stopDuration = 4; 
+                     } else if (player.comboCount === 1) {
+                         stopDuration = c1Stun; 
+                         shakeInt = c1Shake;
+                     } else if (player.comboCount === 2) {
+                         stopDuration = c2Stun;
+                         shakeInt = c2Shake;
                      }
 
                      // Apply Stagger if configured
@@ -1278,7 +1297,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       else if (player.state === 'heavy_attack' && player.animFrame >= 8) {
          player.state = 'idle';
       }
-      else if (isAttacking && player.attackCooldown <= 0 && !isFinisher && player.state !== 'heavy_attack' && player.state !== 'air_attack' && player.comboCount !== 3) {
+      else if (isAttacking && player.attackCooldown <= 0 && !isFinisher && player.state !== 'heavy_attack' && player.comboCount !== 3) {
         player.state = 'idle';
         player.comboWindow = COMBO_WINDOW_FRAMES;
       }
@@ -1292,25 +1311,20 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         }
       }
       
-      if (player.state === 'air_attack' || (player.state === 'attack' && player.comboCount === 3)) {
+      if (player.state === 'attack' && player.comboCount === 3) {
            // DYNAMIC LIMIT for Combo 3
-           const limit = player.comboCount === 3 ? c3TotalFrames : 18; 
+           const limit = c3TotalFrames; 
            
            if (player.animFrame > limit) { 
-               if (player.comboCount === 3) {
-                   player.state = 'attack';
-                   player.comboCount = 4;
-                   player.vy = -5; 
-                   player.vx = 0;
-                   player.attackCooldown = 30;
-                   player.animFrame = 0;
-                   player.animTimer = 0;
-                   player.hasDealtDamage = false;
-                   playSound('attack_heavy');
-               } else {
-                   player.state = 'idle';
-                   player.comboWindow = COMBO_WINDOW_FRAMES;
-               }
+               player.state = 'attack';
+               player.comboCount = 4;
+               player.vy = -5; 
+               player.vx = player.facingRight ? c4Slide : -c4Slide;
+               player.attackCooldown = 30;
+               player.animFrame = 0;
+               player.animTimer = 0;
+               player.hasDealtDamage = false;
+               playSound('attack_heavy');
            }
       }
       if (isFinisher && player.animFrame >= 20) {
@@ -1328,7 +1342,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       if (player.state === 'heavy_attack') animSpeed = 2; 
       if (player.state === 'dodge') animSpeed = 3;
       if (player.state === 'hit') animSpeed = 10;
-      if (player.state === 'air_attack') animSpeed = 2; 
       
       if (player.animTimer > animSpeed) {
         player.animFrame++;
@@ -1640,9 +1653,11 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
   const drawPlayer = (ctx: CanvasRenderingContext2D, p: Entity) => {
     const { width: w, height: h, state, animFrame, comboCount, hitStop } = p;
     const { 
-        fanFade, fanBrightness, fanOpacity,
+        fanFade, fanBrightness, fanDensity, fanOpacity,
         c3Radius, c3Width, c3Glow, c3Density, c3Opacity, c3Speed,
-        c3BgBrightness, c3BgOpacity, c3BlurSteps, c3BlurFade
+        c3BgBrightness, c3BgOpacity, c3BlurSteps, c3BlurFade,
+        c4Length,
+        heavyRange, heavyWidth, heavyGlow, heavyOpacity
     } = debugParamsRef.current;
     
     // Using speed=1 for combo count 4 to match update logic
@@ -1656,8 +1671,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     if (p.state === 'heavy_attack') speed = 2;
     if (p.state === 'dodge') speed = 3;
     if (p.state === 'hit') speed = 10;
-    if (p.state === 'air_attack') speed = 2;
-
+    
     const smoothT = Math.min(1, p.animTimer / speed);
     const smoothFrame = animFrame + smoothT;
 
@@ -1841,24 +1855,15 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
             const currentAngleDeg = (smoothFrame * c3Speed);
             const currentAngleRad = currentAngleDeg * (Math.PI / 180);
             
-            // Draw Motion Blur Compensation (Past Frames)
-            // Logic: Distribute steps uniformly between current frame angle and previous frame angle
-            // to simulate high speed rotation without gaps.
+            // Motion Blur Logic
             const steps = Math.floor(c3BlurSteps);
-            
-            // Calculate gap based on speed (degrees per frame)
-            // Distribute steps evenly within the arc traveled in 1 frame (speed)
-            // e.g. speed 50, steps 1 -> interval 25.
-            const blurIntervalDeg = c3Speed / (steps + 1);
+            const totalSweepDeg = c3Speed;
+            const stepSizeDeg = totalSweepDeg / (steps + 1);
 
             for (let i = 1; i <= steps; i++) {
-                const lagDeg = i * blurIntervalDeg;
+                const lagDeg = i * stepSizeDeg;
                 const drawAngleRad = (currentAngleDeg - lagDeg) * (Math.PI / 180);
-                
-                // Calculate opacity based on fade parameter
-                // If c3BlurFade is 0, alpha remains 1.0
                 const alpha = Math.max(0, 1.0 - (i * c3BlurFade));
-                
                 drawCross(drawAngleRad, alpha);
             }
             
@@ -1909,15 +1914,16 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                 const fanEndAngle = Math.max(C4_START_ANGLE, Math.min(C4_END_ANGLE, currentAngle));
 
                 // PASS 1: Density/Opacity (Source Over) - Creates the solid backing
-                if (currentOpacity > 0) {
+                // Controlled by 'fanDensity' debug param
+                if (currentOpacity > 0 && fanDensity > 0) {
                     ctx.save();
                     ctx.globalCompositeOperation = 'source-over';
-                    ctx.globalAlpha = currentOpacity * 0.3; // Reduced density multiplier to keep it subtle
+                    ctx.globalAlpha = currentOpacity * fanDensity; 
                     ctx.fillStyle = '#b45309'; // Darker Amber/Gold for density
 
                     ctx.beginPath();
                     ctx.moveTo(0,0);
-                    ctx.arc(0, 0, C4_STAFF_LENGTH, C4_START_ANGLE, fanEndAngle);
+                    ctx.arc(0, 0, c4Length, C4_START_ANGLE, fanEndAngle); // Use dynamic length
                     ctx.fill();
                     ctx.restore();
                 }
@@ -1934,7 +1940,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                     
                     ctx.beginPath();
                     ctx.moveTo(0,0);
-                    ctx.arc(0, 0, C4_STAFF_LENGTH, C4_START_ANGLE, fanEndAngle);
+                    ctx.arc(0, 0, c4Length, C4_START_ANGLE, fanEndAngle); // Use dynamic length
                     ctx.fill();
                     ctx.restore();
                 }
@@ -1952,7 +1958,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                      ctx.fillStyle = cGold;
                      ctx.globalAlpha = Math.max(0, trail.life);
                      
-                     ctx.fillRect(0, -6, 150, 12); 
+                     ctx.fillRect(0, -6, c4Length, 12); // Use dynamic length
                      
                      ctx.restore();
                 });
@@ -1964,33 +1970,11 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
             
             ctx.shadowColor = '#fbbf24';
             ctx.shadowBlur = 15; 
-            drawRect(ctx, -10, -5, 150, 12, cGold); 
+            drawRect(ctx, -10, -5, c4Length, 12, cGold); // Use dynamic length
             ctx.shadowBlur = 0;
             
             ctx.restore();
         }
-    }
-    else if (state === 'air_attack') {
-        const angle = (smoothFrame * 60) * (Math.PI / 180); 
-        ctx.translate(0, -25);
-        ctx.rotate(angle);
-        
-        ctx.globalCompositeOperation = 'lighter';
-        ctx.shadowColor = '#fbbf24';
-        ctx.shadowBlur = 15; 
-        ctx.fillStyle = cGold;
-        ctx.globalAlpha = 0.5;
-        ctx.beginPath();
-        ctx.arc(0, 0, 80, 0, Math.PI*2);
-        ctx.fill();
-        ctx.globalAlpha = 1.0;
-        ctx.shadowBlur = 0;
-        ctx.globalCompositeOperation = 'source-over';
-
-        drawRect(ctx, -60, -3, 120, 6, cStaff);
-        drawRect(ctx, -3, -60, 6, 120, cGold);
-        ctx.rotate(-angle); 
-        drawRect(ctx, -10, -10, 20, 20, cArmor);
     }
     else if (state === 'heavy_attack') {
         const t = Math.min(8, smoothFrame);
@@ -2000,7 +1984,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         drawRect(ctx, -10, -38, 20, 38, cArmor);
         ctx.restore();
         
-        const maxLen = 300;
+        const maxLen = heavyRange; // Use debug param for length
         let currentLen = 40;
         if (t < 6) currentLen = lerp(40, maxLen, easeOutQuad(t/6)); 
         else currentLen = maxLen;
@@ -2009,11 +1993,20 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         ctx.shadowColor = '#f59e0b';
         ctx.shadowBlur = 25;
         ctx.globalCompositeOperation = 'lighter';
-        drawRect(ctx, 0, -35, currentLen, 12, cGold);
-        drawRect(ctx, currentLen, -38, 20, 18, '#fcd34d');
+        ctx.globalAlpha = heavyOpacity;
+        
+        // Apply Glow/Brightness via Lighter + Shadow
+        if (heavyGlow > 0) {
+             ctx.shadowBlur = 25 * heavyGlow;
+             ctx.fillStyle = '#fbbf24'; 
+        }
+
+        // Start from center (0) and draw right
+        drawRect(ctx, 0, -35, currentLen, heavyWidth, cGold);
         
         ctx.globalCompositeOperation = 'source-over';
         ctx.shadowBlur = 0;
+        ctx.globalAlpha = 1.0;
         drawRect(ctx, -20, -32, 30, 6, cStaff);
     }
     else if (state === 'dodge') {
@@ -2344,6 +2337,12 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                                         {selectedEntity === 'player' ? (
                                             <>
                                                 <button 
+                                                    onClick={() => setSelectedSkill('atk1_2')}
+                                                    className={`text-left px-2 py-1 rounded ${selectedSkill === 'atk1_2' ? 'bg-yellow-900/30 text-yellow-500 border-l-2 border-yellow-500' : 'text-gray-400 hover:bg-gray-800'}`}
+                                                >
+                                                    Combo 1 & 2
+                                                </button>
+                                                <button 
                                                     onClick={() => setSelectedSkill('atk3')}
                                                     className={`text-left px-2 py-1 rounded ${selectedSkill === 'atk3' ? 'bg-yellow-900/30 text-yellow-500 border-l-2 border-yellow-500' : 'text-gray-400 hover:bg-gray-800'}`}
                                                 >
@@ -2355,6 +2354,12 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                                                 >
                                                     Attack 4 (Fan)
                                                 </button>
+                                                <button 
+                                                    onClick={() => setSelectedSkill('heavy')}
+                                                    className={`text-left px-2 py-1 rounded ${selectedSkill === 'heavy' ? 'bg-yellow-900/30 text-yellow-500 border-l-2 border-yellow-500' : 'text-gray-400 hover:bg-gray-800'}`}
+                                                >
+                                                    Heavy Attack (Charge)
+                                                </button>
                                             </>
                                         ) : (
                                             <div className="text-gray-600 italic text-xs px-2">No Configurable Skills</div>
@@ -2362,9 +2367,40 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                                     </div>
 
                                     {/* COL 3: Config */}
-                                    <div className="col-span-6 overflow-y-auto max-h-[400px] pr-2">
+                                    <div className="col-span-6 overflow-y-auto max-h-[400px] pr-2 custom-scrollbar">
                                         <h4 className="text-[10px] text-gray-500 uppercase tracking-widest mb-2">Configuration</h4>
                                         
+                                        {selectedEntity === 'player' && selectedSkill === 'atk1_2' && (
+                                             <div className="flex flex-col gap-4">
+                                                <div className="bg-gray-800/30 p-2 rounded border border-gray-800">
+                                                    <h5 className="text-yellow-700 font-bold mb-2">Combo 1 Logic</h5>
+                                                    <div className="space-y-3">
+                                                        <div><div className="flex justify-between"><span>Damage</span><span className="text-yellow-500">{debugValues.c1Damage}</span></div>
+                                                        <input type="range" min="5" max="50" step="1" value={debugValues.c1Damage} onChange={(e) => updateDebug('c1Damage', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+
+                                                        <div><div className="flex justify-between"><span>Stun Frames</span><span className="text-yellow-500">{debugValues.c1Stun}</span></div>
+                                                        <input type="range" min="0" max="20" step="1" value={debugValues.c1Stun} onChange={(e) => updateDebug('c1Stun', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+
+                                                        <div><div className="flex justify-between"><span>Target Shake</span><span className="text-yellow-500">{debugValues.c1Shake}</span></div>
+                                                        <input type="range" min="0" max="10" step="1" value={debugValues.c1Shake} onChange={(e) => updateDebug('c1Shake', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+                                                    </div>
+                                                </div>
+                                                <div className="bg-gray-800/30 p-2 rounded border border-gray-800">
+                                                    <h5 className="text-yellow-700 font-bold mb-2">Combo 2 Logic</h5>
+                                                    <div className="space-y-3">
+                                                        <div><div className="flex justify-between"><span>Damage</span><span className="text-yellow-500">{debugValues.c2Damage}</span></div>
+                                                        <input type="range" min="5" max="50" step="1" value={debugValues.c2Damage} onChange={(e) => updateDebug('c2Damage', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+
+                                                        <div><div className="flex justify-between"><span>Stun Frames</span><span className="text-yellow-500">{debugValues.c2Stun}</span></div>
+                                                        <input type="range" min="0" max="20" step="1" value={debugValues.c2Stun} onChange={(e) => updateDebug('c2Stun', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+
+                                                        <div><div className="flex justify-between"><span>Target Shake</span><span className="text-yellow-500">{debugValues.c2Shake}</span></div>
+                                                        <input type="range" min="0" max="10" step="1" value={debugValues.c2Shake} onChange={(e) => updateDebug('c2Shake', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+                                                    </div>
+                                                </div>
+                                             </div>
+                                        )}
+
                                         {selectedEntity === 'player' && selectedSkill === 'atk3' && (
                                             <div className="flex flex-col gap-4">
                                                 {/* Visuals Group */}
@@ -2389,11 +2425,11 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                                                 <div className="bg-gray-800/30 p-2 rounded border border-gray-800">
                                                     <h5 className="text-yellow-700 font-bold mb-2">Motion Blur</h5>
                                                     <div className="space-y-3">
-                                                        <div><div className="flex justify-between"><span>Steps</span><span className="text-yellow-500">{debugValues.c3BlurSteps}</span></div>
+                                                        <div><div className="flex justify-between"><span>Steps (Uniform)</span><span className="text-yellow-500">{debugValues.c3BlurSteps}</span></div>
                                                         <input type="range" min="0" max="10" step="1" value={debugValues.c3BlurSteps} onChange={(e) => updateDebug('c3BlurSteps', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
                                                         
                                                         <div><div className="flex justify-between"><span>Blur Fade</span><span className="text-yellow-500">{debugValues.c3BlurFade.toFixed(2)}</span></div>
-                                                        <input type="range" min="0" max="0.5" step="0.05" value={debugValues.c3BlurFade} onChange={(e) => updateDebug('c3BlurFade', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+                                                        <input type="range" min="0" max="0.5" step="0.01" value={debugValues.c3BlurFade} onChange={(e) => updateDebug('c3BlurFade', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
                                                     </div>
                                                 </div>
 
@@ -2434,10 +2470,29 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
                                         {selectedEntity === 'player' && selectedSkill === 'atk4' && (
                                              <div className="flex flex-col gap-4">
+                                                {/* Visuals */}
                                                 <div className="bg-gray-800/30 p-2 rounded border border-gray-800">
-                                                    <h5 className="text-yellow-700 font-bold mb-2">Trails</h5>
+                                                    <h5 className="text-yellow-700 font-bold mb-2">Fan Visuals</h5>
                                                     <div className="space-y-3">
-                                                        <div><div className="flex justify-between"><span>Decay</span><span className="text-yellow-500">{debugValues.trailDecay.toFixed(2)}</span></div>
+                                                        <div><div className="flex justify-between"><span>Concentration (Density)</span><span className="text-yellow-500">{debugValues.fanDensity.toFixed(2)}</span></div>
+                                                        <input type="range" min="0" max="1.0" step="0.05" value={debugValues.fanDensity} onChange={(e) => updateDebug('fanDensity', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+                                                        
+                                                        <div><div className="flex justify-between"><span>Glow (Brightness)</span><span className="text-yellow-500">{debugValues.fanBrightness.toFixed(1)}</span></div>
+                                                        <input type="range" min="0" max="2.0" step="0.1" value={debugValues.fanBrightness} onChange={(e) => updateDebug('fanBrightness', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+                                                        
+                                                        <div><div className="flex justify-between"><span>Master Opacity</span><span className="text-yellow-500">{debugValues.fanOpacity.toFixed(2)}</span></div>
+                                                        <input type="range" min="0" max="1.0" step="0.05" value={debugValues.fanOpacity} onChange={(e) => updateDebug('fanOpacity', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+
+                                                        <div><div className="flex justify-between"><span>Fade Speed</span><span className="text-yellow-500">{debugValues.fanFade.toFixed(2)}</span></div>
+                                                        <input type="range" min="0.01" max="0.5" step="0.01" value={debugValues.fanFade} onChange={(e) => updateDebug('fanFade', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+                                                    </div>
+                                                </div>
+                                                
+                                                {/* Trails */}
+                                                <div className="bg-gray-800/30 p-2 rounded border border-gray-800">
+                                                    <h5 className="text-yellow-700 font-bold mb-2">Trail Visuals</h5>
+                                                    <div className="space-y-3">
+                                                        <div><div className="flex justify-between"><span>Decay Speed</span><span className="text-yellow-500">{debugValues.trailDecay.toFixed(2)}</span></div>
                                                         <input type="range" min="0.05" max="0.4" step="0.01" value={debugValues.trailDecay} onChange={(e) => updateDebug('trailDecay', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
                                                         
                                                         <div><div className="flex justify-between"><span>Step (Density)</span><span className="text-yellow-500">{debugValues.trailStep.toFixed(2)}</span></div>
@@ -2445,17 +2500,67 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                                                     </div>
                                                 </div>
 
+                                                {/* Logic */}
                                                 <div className="bg-gray-800/30 p-2 rounded border border-gray-800">
-                                                    <h5 className="text-yellow-700 font-bold mb-2">Fan Glow</h5>
+                                                    <h5 className="text-yellow-700 font-bold mb-2">Gameplay Logic</h5>
                                                     <div className="space-y-3">
-                                                        <div><div className="flex justify-between"><span>Brightness</span><span className="text-yellow-500">{debugValues.fanBrightness.toFixed(1)}</span></div>
-                                                        <input type="range" min="0" max="2.0" step="0.1" value={debugValues.fanBrightness} onChange={(e) => updateDebug('fanBrightness', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
-                                                        
-                                                        <div><div className="flex justify-between"><span>Opacity</span><span className="text-yellow-500">{debugValues.fanOpacity.toFixed(2)}</span></div>
-                                                        <input type="range" min="0" max="1.0" step="0.05" value={debugValues.fanOpacity} onChange={(e) => updateDebug('fanOpacity', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+                                                        <div><div className="flex justify-between"><span>Staff Range</span><span className="text-yellow-500">{debugValues.c4Length}</span></div>
+                                                        <input type="range" min="100" max="300" step="10" value={debugValues.c4Length} onChange={(e) => updateDebug('c4Length', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
 
-                                                        <div><div className="flex justify-between"><span>Fade Speed</span><span className="text-yellow-500">{debugValues.fanFade.toFixed(2)}</span></div>
-                                                        <input type="range" min="0.01" max="0.5" step="0.01" value={debugValues.fanFade} onChange={(e) => updateDebug('fanFade', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+                                                        <div><div className="flex justify-between"><span>Damage</span><span className="text-yellow-500">{debugValues.c4Damage}</span></div>
+                                                        <input type="range" min="10" max="150" step="5" value={debugValues.c4Damage} onChange={(e) => updateDebug('c4Damage', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+
+                                                        <div><div className="flex justify-between"><span>Knockback Force</span><span className="text-yellow-500">{debugValues.c4Knockback}</span></div>
+                                                        <input type="range" min="0" max="20" step="1" value={debugValues.c4Knockback} onChange={(e) => updateDebug('c4Knockback', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+
+                                                        <div><div className="flex justify-between"><span>Stun Duration</span><span className="text-yellow-500">{debugValues.c4Stun}</span></div>
+                                                        <input type="range" min="0" max="30" step="1" value={debugValues.c4Stun} onChange={(e) => updateDebug('c4Stun', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+
+                                                        <div><div className="flex justify-between"><span>Target Shake</span><span className="text-yellow-500">{debugValues.c4Shake}</span></div>
+                                                        <input type="range" min="0" max="40" step="1" value={debugValues.c4Shake} onChange={(e) => updateDebug('c4Shake', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+
+                                                        <div><div className="flex justify-between"><span>Slide Distance</span><span className="text-yellow-500">{debugValues.c4Slide}</span></div>
+                                                        <input type="range" min="0" max="15" step="0.5" value={debugValues.c4Slide} onChange={(e) => updateDebug('c4Slide', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+                                                    </div>
+                                                </div>
+                                             </div>
+                                        )}
+
+                                        {selectedEntity === 'player' && selectedSkill === 'heavy' && (
+                                             <div className="flex flex-col gap-4">
+                                                 {/* Visuals */}
+                                                 <div className="bg-gray-800/30 p-2 rounded border border-gray-800">
+                                                    <h5 className="text-yellow-700 font-bold mb-2">Heavy Attack Visuals</h5>
+                                                    <div className="space-y-3">
+                                                        <div><div className="flex justify-between"><span>Width</span><span className="text-yellow-500">{debugValues.heavyWidth}</span></div>
+                                                        <input type="range" min="4" max="30" step="1" value={debugValues.heavyWidth} onChange={(e) => updateDebug('heavyWidth', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+
+                                                        <div><div className="flex justify-between"><span>Glow (Brightness)</span><span className="text-yellow-500">{debugValues.heavyGlow.toFixed(1)}</span></div>
+                                                        <input type="range" min="0" max="2" step="0.1" value={debugValues.heavyGlow} onChange={(e) => updateDebug('heavyGlow', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+                                                        
+                                                        <div><div className="flex justify-between"><span>Opacity</span><span className="text-yellow-500">{debugValues.heavyOpacity.toFixed(1)}</span></div>
+                                                        <input type="range" min="0" max="1" step="0.1" value={debugValues.heavyOpacity} onChange={(e) => updateDebug('heavyOpacity', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+                                                    </div>
+                                                </div>
+
+                                                {/* Logic */}
+                                                <div className="bg-gray-800/30 p-2 rounded border border-gray-800">
+                                                    <h5 className="text-yellow-700 font-bold mb-2">Heavy Attack Logic</h5>
+                                                    <div className="space-y-3">
+                                                        <div><div className="flex justify-between"><span>Damage</span><span className="text-yellow-500">{debugValues.heavyDamage}</span></div>
+                                                        <input type="range" min="10" max="200" step="5" value={debugValues.heavyDamage} onChange={(e) => updateDebug('heavyDamage', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+
+                                                        <div><div className="flex justify-between"><span>Range (Visual & Logic)</span><span className="text-yellow-500">{debugValues.heavyRange}</span></div>
+                                                        <input type="range" min="100" max="500" step="10" value={debugValues.heavyRange} onChange={(e) => updateDebug('heavyRange', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+
+                                                        <div><div className="flex justify-between"><span>Knockback Force</span><span className="text-yellow-500">{debugValues.heavyKnockback}</span></div>
+                                                        <input type="range" min="0" max="30" step="1" value={debugValues.heavyKnockback} onChange={(e) => updateDebug('heavyKnockback', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+
+                                                        <div><div className="flex justify-between"><span>Stun Duration</span><span className="text-yellow-500">{debugValues.heavyStun}</span></div>
+                                                        <input type="range" min="0" max="60" step="1" value={debugValues.heavyStun} onChange={(e) => updateDebug('heavyStun', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+
+                                                        <div><div className="flex justify-between"><span>Target Shake</span><span className="text-yellow-500">{debugValues.heavyShake}</span></div>
+                                                        <input type="range" min="0" max="50" step="1" value={debugValues.heavyShake} onChange={(e) => updateDebug('heavyShake', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
                                                     </div>
                                                 </div>
                                              </div>
