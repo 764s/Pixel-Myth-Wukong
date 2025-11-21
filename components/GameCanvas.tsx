@@ -736,7 +736,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                        }
                    }
                    
-                   if (player.attackCooldown === 0) player.attackCooldown = 15; 
+                   if (player.attackCooldown === 0) player.attackCooldown = 11; // Faster attack cooldown for light attacks (was 15)
                    if (player.comboCount === 3) player.attackCooldown = 20; 
 
                    player.animFrame = 0;
@@ -1001,7 +1001,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       if (player.state === 'attack') {
           if (player.comboCount === 3) animSpeed = 3; 
           else if (player.comboCount === 4) animSpeed = 1; 
-          else animSpeed = 5;
+          else animSpeed = 3; // Faster light attack (was 5)
       }
       if (player.state === 'heavy_attack') animSpeed = 2; 
       if (player.state === 'dodge') animSpeed = 3;
@@ -1226,7 +1226,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       if (p.state === 'attack') {
           if (p.comboCount === 3) return 3;
           if (p.comboCount === 4) return 1;
-          return 5;
+          return 3; // Faster default attack speed (was 5)
       }
       if (p.state === 'heavy_attack') return 2;
       if (p.state === 'dodge') return 3;
