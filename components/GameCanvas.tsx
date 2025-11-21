@@ -1,4 +1,3 @@
-
 import React, { useRef, useEffect, useCallback } from 'react';
 import { GameState, Entity, Particle } from '../types';
 
@@ -27,6 +26,8 @@ const BOSS_DAMAGE = 15;
 const BOSS_KOWTOW_DAMAGE = 25; // High damage for the slam
 const CHARGE_THRESHOLD = 20; 
 const COMBO_WINDOW_FRAMES = 50; 
+
+const IMMOBILIZE_BREAK_THRESHOLD = 80; // Damage needed to break the spell early
 
 // Pixel Art Resolution (Physics is 800x450, Canvas is 480x270)
 const LOGICAL_WIDTH = 800;
@@ -301,6 +302,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         | 'charge' 
         | 'spell' 
         | 'hit_heavy'
+        | 'break_spell'
   ) => {
       if (!audioCtxRef.current) return;
       const ctx = audioCtxRef.current;
@@ -470,6 +472,62 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
              osc2.start(t);
              osc2.stop(t+1.5);
              break;
+
+          case 'break_spell':
+             // REVISED 2: Matching 'spell' tonality (2500/4000Hz) but shattering
+             
+             // 1. The "Snap" - Sudden pitch drop on the base tone (Matches spell base 2500Hz)
+             const snapOsc = ctx.createOscillator();
+             snapOsc.type = 'sine';
+             snapOsc.frequency.setValueAtTime(2500, t); 
+             snapOsc.frequency.exponentialRampToValueAtTime(100, t + 0.1); // Instant snap down
+             
+             const snapG = ctx.createGain();
+             snapG.gain.setValueAtTime(0.5, t);
+             snapG.gain.exponentialRampToValueAtTime(0.01, t + 0.1);
+             
+             snapOsc.connect(snapG);
+             snapG.connect(ctx.destination);
+             snapOsc.start(t);
+             snapOsc.stop(t + 0.15);
+
+             // 2. The "Shards" - High metallic inharmonic ring
+             // Uses the same 4000Hz from spell but detuned for dissonance
+             const shardOsc = ctx.createOscillator();
+             shardOsc.type = 'triangle';
+             shardOsc.frequency.setValueAtTime(4000, t); 
+             shardOsc.detune.setValueAtTime(500, t); // Discordant
+             
+             const shardG = ctx.createGain();
+             shardG.gain.setValueAtTime(0.3, t);
+             shardG.gain.exponentialRampToValueAtTime(0.01, t + 0.2); // Short tail
+             
+             shardOsc.connect(shardG);
+             shardG.connect(ctx.destination);
+             shardOsc.start(t);
+             shardOsc.stop(t + 0.25);
+             
+             // 3. Glass Dust - High frequency noise (No low grit)
+             const dustBuf = ctx.createBuffer(1, ctx.sampleRate * 0.1, ctx.sampleRate);
+             const dustData = dustBuf.getChannelData(0);
+             for(let i=0; i<dustBuf.length; i++) dustData[i] = (Math.random() * 2 - 1);
+             
+             const dustSrc = ctx.createBufferSource();
+             dustSrc.buffer = dustBuf;
+             
+             const dustFilt = ctx.createBiquadFilter();
+             dustFilt.type = 'highpass';
+             dustFilt.frequency.value = 6000; 
+             
+             const dustG = ctx.createGain();
+             dustG.gain.setValueAtTime(0.4, t);
+             dustG.gain.exponentialRampToValueAtTime(0.01, t + 0.1);
+             
+             dustSrc.connect(dustFilt);
+             dustFilt.connect(dustG);
+             dustG.connect(ctx.destination);
+             dustSrc.start(t);
+             break;
       }
   }, []);
 
@@ -540,7 +598,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       animTimer: 0,
       hitStop: 0,
       isImmobilized: false,
-      immobilizeTimer: 0
+      immobilizeTimer: 0,
+      immobilizeDamageTaken: 0
     };
 
     particlesRef.current = [];
@@ -580,7 +639,12 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
   // --- Helper: Collision Resolution ---
   const resolveEntityCollision = (e1: Entity, e2: Entity) => {
     if (e1.state === 'dodge' || e2.state === 'dodge') return;
-    if (e1.hitStop > 0 || e2.hitStop > 0) return; 
+    
+    // If entities are frozen in hitstop, usually skip resolution to avoid jitter.
+    // BUT, if Boss is immobilized, they should act as a solid wall regardless of hitstop state.
+    const p1Frozen = e1.hitStop > 0 && !e1.isImmobilized;
+    const p2Frozen = e2.hitStop > 0 && !e2.isImmobilized;
+    if (p1Frozen || p2Frozen) return;
 
     if (
         e1.pos.x < e2.pos.x + e2.width &&
@@ -654,10 +718,47 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
            if (facingTarget && Math.abs(dist) < range) {
                boss.isImmobilized = true;
                boss.immobilizeTimer = 300; // 5 seconds
+               boss.immobilizeDamageTaken = 0; // Reset damage tracker
                // NOTE: Do NOT reset boss.state or velocity here. 
                // Immobilize should pause time, not reset state.
                
                playSound('spell');
+               
+               // Visual: Causality Thread (Player -> Boss)
+               // REVISED: Ethereal Arc with scatter
+               const pCx = player.pos.x + player.width/2;
+               const pCy = player.pos.y + player.height/2;
+               const bCx = boss.pos.x + boss.width/2;
+               const bCy = boss.pos.y + boss.height/2;
+               
+               // Control point for a slight arc (visual flair)
+               const cX = (pCx + bCx) / 2;
+               const cY = (pCy + bCy) / 2 - 40; // Arc upwards slightly
+               
+               const particleCount = 24;
+               for(let i=0; i<=particleCount; i++) {
+                   const t = i / particleCount;
+                   // Quadratic Bezier: (1-t)^2 * P0 + 2(1-t)t * P1 + t^2 * P2
+                   const invT = 1 - t;
+                   const lx = (invT * invT * pCx) + (2 * invT * t * cX) + (t * t * bCx);
+                   const ly = (invT * invT * pCy) + (2 * invT * t * cY) + (t * t * bCy);
+                   
+                   // "Ethereal" Scatter
+                   const scatter = 8; // Pixel variance
+                   const offsetX = (Math.random() - 0.5) * scatter;
+                   const offsetY = (Math.random() - 0.5) * scatter;
+
+                   particlesRef.current.push({
+                       x: lx + offsetX,
+                       y: ly + offsetY,
+                       vx: (Math.random() - 0.5) * 0.2, // Minimal horizontal drift
+                       vy: -Math.random() * 0.5, // Upward float
+                       life: 0.4 + Math.random() * 0.3, // Varied short lifespan
+                       color: Math.random() > 0.5 ? '#fbbf24' : '#fef3c7', // Gold mixed with pale yellow
+                       size: Math.random() * 2 + 0.5 // Varied small sizes
+                   });
+               }
+               
                createParticles(boss.pos.x + boss.width/2, boss.pos.y + boss.height/2, '#fbbf24', 30, 4);
                // Removed long CD, set small debounce to prevent frame tearing
                player.spellCooldown = 30; 
@@ -714,7 +815,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
                    if (onGround) {
                        player.state = 'attack';
-                       if (player.comboWindow > 0) {
+                       if (player.comboCount > 0) {
                            player.comboCount = (player.comboCount % 4) + 1;
                        } else {
                            player.comboCount = 1;
@@ -920,12 +1021,70 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
                  // Immobilized Boss Logic on Hit
                  if (boss.isImmobilized) {
-                    // 1. Ignore State Change (Hit Stun)
-                    // 2. Ignore Knockback (vx)
-                    // 3. Allow Shake
-                    shakeRef.current = 5;
-                    createParticles(boss.pos.x + boss.width/2, boss.pos.y + boss.height/2, '#fbbf24', 12);
-                    playSound(isHeavyHit ? 'hit_heavy' : 'hit');
+                    // Accumulate damage to break spell
+                    boss.immobilizeDamageTaken = (boss.immobilizeDamageTaken || 0) + damage;
+
+                    if (boss.immobilizeDamageTaken > IMMOBILIZE_BREAK_THRESHOLD) {
+                        // BREAK!
+                        boss.isImmobilized = false;
+                        boss.immobilizeDamageTaken = 0;
+                        boss.immobilizeTimer = 0;
+
+                        // 1. Visuals & Sound
+                        playSound('break_spell'); // High pitch shatter
+                        shakeRef.current = 25; // Heavy Shake (Guaranteed and Increased)
+                        
+                        // 2. Particles (Explosion of Gold & Glass)
+                        for(let i=0; i<25; i++) {
+                            // Gold Shards
+                            particlesRef.current.push({
+                                x: boss.pos.x + boss.width/2,
+                                y: boss.pos.y + boss.height/2,
+                                vx: (Math.random() - 0.5) * 18,
+                                vy: (Math.random() - 0.5) * 18,
+                                life: 1.2,
+                                color: '#fbbf24',
+                                size: Math.random() * 4 + 3
+                            });
+                            // White Glass Shards
+                            particlesRef.current.push({
+                                x: boss.pos.x + boss.width/2,
+                                y: boss.pos.y + boss.height/2,
+                                vx: (Math.random() - 0.5) * 15,
+                                vy: (Math.random() - 0.5) * 15,
+                                life: 1.0,
+                                color: '#ffffff',
+                                size: Math.random() * 3 + 2
+                            });
+                        }
+
+                        // 3. Recoil/Hit State Force
+                        boss.state = 'hit';
+                        boss.animFrame = 0;
+                        boss.vx = player.facingRight ? 8 : -8; // Knockback applied on break
+
+                        // 4. Hit Stop Calculation
+                        let stopDuration = 10;
+                        if (isHeavyHit) stopDuration = 15;
+                        else if (isMultiHit) stopDuration = 8;
+                        
+                        // NEW: Ensure minimum hitstop for break is at least 18 frames
+                        const MIN_BREAK_STUN = 18;
+                        const finalStun = Math.max(stopDuration, MIN_BREAK_STUN);
+
+                        player.hitStop = finalStun;
+                        boss.hitStop = finalStun;
+
+                    } else {
+                        // Hit while frozen, but didn't break
+                        playSound(isHeavyHit ? 'hit_heavy' : 'hit');
+                        shakeRef.current = 5;
+                        createParticles(boss.pos.x + boss.width/2, boss.pos.y + boss.height/2, '#fbbf24', 8, 5);
+                        
+                        // Small hitstop to feel the impact on the frozen body
+                        player.hitStop = 3;
+                        boss.hitStop = 3;
+                    }
                  } else {
                      // Normal Hit Logic
                      let kForce = 4;
@@ -933,8 +1092,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                      if (player.state === 'heavy_attack') kForce = 25; 
                      
                      boss.vx = player.facingRight ? kForce : -kForce;
-                     // Don't interrupt kowtow attack if poised (optional, but standard game logic usually interrupts)
-                     // Let's allow interruption for now to feel fair.
                      boss.state = 'hit';
                      boss.animTimer = 0;
                      
@@ -1050,28 +1207,29 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
     // --- 2. Boss Logic ---
     if (boss && !boss.isDead) {
+      // Allow hitStop to decrement even if immobilized, ensuring collision flags clear
+      if (boss.hitStop > 0) boss.hitStop--;
+
       if (boss.isImmobilized) {
           // FROZEN STATE (Immobilize)
-          // Pause time: Do NOT update physics, animations or state transitions.
-          // Only update the timer and emit effects.
-          
+          // Timer Tick Down
           if (boss.immobilizeTimer && boss.immobilizeTimer > 0) {
              boss.immobilizeTimer--;
              
              // Golden Particles emission
-             if (boss.immobilizeTimer % 10 === 0) {
+             const flickerRate = 10;
+             if (boss.immobilizeTimer % flickerRate === 0) {
                  createParticles(boss.pos.x + Math.random()*boss.width, boss.pos.y + Math.random()*boss.height, '#fbbf24', 1, 1);
              }
           } else {
+             // Time expired naturally
              boss.isImmobilized = false;
-             // Resume naturally as we fall through to the else block next frame
           }
       } else {
         // NORMAL STATE (Physics & Logic Active)
         
-        if (boss.hitStop > 0) {
-            boss.hitStop--;
-        } else {
+        // If not in hitstop (visual freeze), run AI
+        if (boss.hitStop <= 0) {
             boss.facingRight = player.pos.x > boss.pos.x;
             const distance = Math.abs(player.pos.x - boss.pos.x);
             const PREFERRED_DISTANCE = 220;
@@ -1235,19 +1393,22 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                     boss.state = 'idle';
                 }
             }
-            
-            if (boss.attackCooldown > 0) boss.attackCooldown--;
-            boss.vy += GRAVITY;
-            boss.pos.x += boss.vx;
-            boss.pos.y += boss.vy;
-            
-            if (boss.pos.y + boss.height > GROUND_Y) {
-                boss.pos.y = GROUND_Y - boss.height;
-                boss.vy = 0;
-            }
-            boss.pos.x = Math.max(0, Math.min(boss.pos.x, 1200 - boss.width));
+        } // End AI checks (if !hitStop)
+        
+        if (boss.attackCooldown > 0) boss.attackCooldown--;
+        boss.vy += GRAVITY;
+        boss.pos.x += boss.vx;
+        boss.pos.y += boss.vy;
+        
+        if (boss.pos.y + boss.height > GROUND_Y) {
+            boss.pos.y = GROUND_Y - boss.height;
+            boss.vy = 0;
+        }
+        boss.pos.x = Math.max(0, Math.min(boss.pos.x, 1200 - boss.width));
 
-            // Boss Animation Update
+        // Boss Animation Update
+        // Skip animation update during hitStop (freeze frame effect)
+        if (boss.hitStop <= 0) {
             let bossAnimSpeed = 10;
             if (boss.state === 'kowtow_attack') bossAnimSpeed = 6; // Slower animation for weight
             if (boss.state === 'hit') bossAnimSpeed = 5;
@@ -1259,11 +1420,12 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
             }
         }
       }
+    }
       
-      if (boss.health <= 0) {
-            boss.isDead = true;
-            setGameState(GameState.VICTORY);
-        }
+    if (boss.health <= 0) {
+        boss.isDead = true;
+        setGameState(GameState.VICTORY);
+    }
 
     if (boss && !boss.isDead && !player.isDead) {
         resolveEntityCollision(player, boss);
@@ -1306,7 +1468,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
     cameraXRef.current += (targetCamX - cameraXRef.current) * 0.1;
     cameraXRef.current = Math.max(0, Math.min(cameraXRef.current, 600)); 
-    }
 
   }, [gameState, setGameState, setPlayerHealth, setBossHealth, setStamina, setScore, playSound]);
 
@@ -1699,11 +1860,12 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
              ctx.translate(-originX, -originY);
         }
 
-        if (b.state === 'hit' && b.hitStop > 0 && !b.isImmobilized) {
+        // Shortened flash: Only flash during hitStop (freeze) and very briefly after (first 4 frames of recovery)
+        // This prevents the "white box" look from lasting the entire stun duration.
+        const isFlashing = b.state === 'hit' && !b.isImmobilized && (b.hitStop > 0 || b.animTimer < 4);
+
+        if (isFlashing) {
              ctx.fillStyle = '#fff'; 
-             ctx.fillRect(bx, by, b.width, b.height);
-        } else if (b.state === 'hit' && !b.isImmobilized) {
-             ctx.fillStyle = '#fff';
              ctx.fillRect(bx, by, b.width, b.height);
         } else {
             // Boss Color Logic

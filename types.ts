@@ -41,6 +41,7 @@ export interface Entity {
   spellCooldown?: number;
   isImmobilized?: boolean;
   immobilizeTimer?: number;
+  immobilizeDamageTaken?: number; // Tracks cumulative damage during immobilization
 }
 
 export interface Particle {
