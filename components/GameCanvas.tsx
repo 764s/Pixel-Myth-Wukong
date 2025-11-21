@@ -105,7 +105,15 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     }
   }, []);
 
-  const playOscillator = (ctx: AudioContext, freq: number, time: number, duration: number, type: OscillatorType, vol: number, envelope: 'pluck' | 'pad' | 'perc' = 'pluck') => {
+  const playOscillator = (
+      ctx: AudioContext, 
+      freq: number, 
+      time: number, 
+      duration: number, 
+      type: OscillatorType, 
+      vol: number, 
+      envelope: 'pluck' | 'pad' | 'perc' = 'pluck'
+  ) => {
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     const filter = ctx.createBiquadFilter();
@@ -182,8 +190,10 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     const SIXTEENTH = SEC_PER_BEAT / 4;
 
     // Key: E Minor (Heroic/Rock)
-    const E2=82.41, G2=98.00, A2=110.00, B2=123.47, D3=146.83, E3=164.81, G3=196.00, A3=220.00, B3=246.94, 
-          C4=261.63, D4=293.66, E4=329.63, Fs4=369.99, G4=392.00, A4=440.00, B4=493.88, D5=587.33, E5=659.25;
+    const E2=82.41, G2=98.00, A2=110.00, B2=123.47;
+    const D3=146.83, E3=164.81, G3=196.00, A3=220.00, B3=246.94;
+    const C4=261.63, D4=293.66, E4=329.63, Fs4=369.99, G4=392.00, A4=440.00, B4=493.88;
+    const D5=587.33, E5=659.25;
 
     // Driving Rock Bass (Sawtooth) - 16 note loop
     const bassLine = [
@@ -279,7 +289,18 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
   }, [gameState, stopBGM]);
 
   // --- SFX System (FFXIV Style) ---
-  const playSound = useCallback((type: 'jump' | 'dash' | 'attack_light' | 'attack_heavy' | 'hit' | 'block' | 'charge' | 'spell' | 'hit_heavy') => {
+  const playSound = useCallback((
+      type: 
+        | 'jump' 
+        | 'dash' 
+        | 'attack_light' 
+        | 'attack_heavy' 
+        | 'hit' 
+        | 'block' 
+        | 'charge' 
+        | 'spell' 
+        | 'hit_heavy'
+  ) => {
       if (!audioCtxRef.current) return;
       const ctx = audioCtxRef.current;
       const t = ctx.currentTime;
@@ -559,10 +580,12 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     if (e1.state === 'dodge' || e2.state === 'dodge') return;
     if (e1.hitStop > 0 || e2.hitStop > 0) return; 
 
-    if (e1.pos.x < e2.pos.x + e2.width &&
+    if (
+        e1.pos.x < e2.pos.x + e2.width &&
         e1.pos.x + e1.width > e2.pos.x &&
         e1.pos.y < e2.pos.y + e2.height &&
-        e1.pos.y + e1.height > e2.pos.y) {
+        e1.pos.y + e1.height > e2.pos.y
+    ) {
         
         const center1 = e1.pos.x + e1.width / 2;
         const center2 = e2.pos.x + e2.width / 2;
@@ -736,7 +759,10 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                        }
                    }
                    
-                   if (player.attackCooldown === 0) player.attackCooldown = 11; // Faster attack cooldown for light attacks (was 15)
+                   if (player.attackCooldown === 0) {
+                       if (player.comboCount === 1 || player.comboCount === 2) player.attackCooldown = 7;
+                       else player.attackCooldown = 11;
+                   }
                    if (player.comboCount === 3) player.attackCooldown = 20; 
 
                    player.animFrame = 0;
@@ -920,6 +946,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                      } else if (isMultiHit) {
                          stopDuration = 8; 
                          shakeInt = 5;
+                     } else if (player.comboCount === 1 || player.comboCount === 2) {
+                         stopDuration = 6;
                      }
 
                      player.hitStop = stopDuration; 
