@@ -36,6 +36,11 @@ export interface Entity {
   hasHitInAir?: boolean; // Tracks if an air attack has connected
   hasDealtDamage?: boolean; // Tracks if the current single-hit attack has registered
   hitStop: number; // Frames to freeze this entity for impact effect
+  
+  // New Props for Immobilize Mechanic
+  spellCooldown?: number;
+  isImmobilized?: boolean;
+  immobilizeTimer?: number;
 }
 
 export interface Particle {

@@ -85,7 +85,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     animTimer: 0,
     hasHitInAir: false,
     hasDealtDamage: false,
-    hitStop: 0
+    hitStop: 0,
+    spellCooldown: 0
   });
 
   const bossRef = useRef<Entity | null>(null);
@@ -266,7 +267,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         audioCtxRef.current.resume();
     }
     if (gameState === GameState.PLAYING && !bgmRunningRef.current) {
-        startBGM();
+        // Temporarily disabled BGM
+        // startBGM();
     }
   }, [gameState, startBGM]);
 
@@ -277,7 +279,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
   }, [gameState, stopBGM]);
 
   // --- SFX System (FFXIV Style) ---
-  const playSound = useCallback((type: 'jump' | 'dash' | 'attack_light' | 'attack_heavy' | 'hit' | 'block' | 'charge') => {
+  const playSound = useCallback((type: 'jump' | 'dash' | 'attack_light' | 'attack_heavy' | 'hit' | 'block' | 'charge' | 'spell' | 'hit_heavy') => {
       if (!audioCtxRef.current) return;
       const ctx = audioCtxRef.current;
       const t = ctx.currentTime;
@@ -346,9 +348,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
           case 'hit':
               // "Crystal Shatter" - Critical Hit Sound
-              // High pitched random arpeggio simulation via noise modulation?
-              // Simple approach: 2 oscillators
-              
               // Impact
               osc.type = 'triangle';
               osc.frequency.setValueAtTime(150, t);
@@ -372,6 +371,39 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
               sOsc.stop(t + 0.15);
               break;
 
+          case 'hit_heavy':
+               // Massive Impact (Heavy Attack)
+               // 1. Low Thud (Kick-like)
+               osc.type = 'triangle';
+               osc.frequency.setValueAtTime(100, t);
+               osc.frequency.exponentialRampToValueAtTime(20, t + 0.4);
+               gain.gain.setValueAtTime(0.8, t);
+               gain.gain.exponentialRampToValueAtTime(0.01, t + 0.4);
+               osc.start(t);
+               osc.stop(t + 0.5);
+
+               // 2. Bass-heavy Noise Burst
+               const nBuf = ctx.createBuffer(1, ctx.sampleRate * 0.4, ctx.sampleRate);
+               const nd = nBuf.getChannelData(0);
+               for(let i=0; i<nBuf.length; i++) nd[i] = (Math.random() * 2 - 1);
+               const nSrc = ctx.createBufferSource();
+               nSrc.buffer = nBuf;
+               const nFilt = ctx.createBiquadFilter();
+               nFilt.type = 'lowpass';
+               nFilt.frequency.setValueAtTime(300, t);
+               nFilt.frequency.linearRampToValueAtTime(100, t + 0.3);
+               nSrc.connect(nFilt);
+               nFilt.connect(gain); // Shared gain, or direct? Use new gain for control
+               // Creating new gain for noise part to allow independent volume
+               const nGain = ctx.createGain();
+               nFilt.disconnect();
+               nFilt.connect(nGain);
+               nGain.connect(ctx.destination);
+               nGain.gain.setValueAtTime(0.6, t);
+               nGain.gain.exponentialRampToValueAtTime(0.01, t + 0.3);
+               nSrc.start(t);
+               break;
+
           case 'charge':
               // "Job Gauge Fill" - Rising chime
               osc.type = 'sine';
@@ -394,6 +426,28 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
               tremolo.start(t);
               tremolo.stop(t + 0.3);
               break;
+          case 'spell':
+             // "Immobilize" - Sharp Metallic 'Ding' (Wukong Style)
+             const osc1 = ctx.createOscillator();
+             osc1.type = 'sine';
+             osc1.frequency.setValueAtTime(2500, t); 
+             osc1.frequency.exponentialRampToValueAtTime(1000, t + 0.3);
+             osc1.connect(gain);
+             
+             const osc2 = ctx.createOscillator();
+             osc2.type = 'triangle';
+             osc2.frequency.setValueAtTime(4000, t); // Metallic tint
+             osc2.frequency.exponentialRampToValueAtTime(500, t + 0.1);
+             osc2.connect(gain);
+             
+             gain.gain.setValueAtTime(0.4, t);
+             gain.gain.exponentialRampToValueAtTime(0.001, t + 1.5); // Long resonant tail
+             
+             osc1.start(t);
+             osc1.stop(t+1.5);
+             osc2.start(t);
+             osc2.stop(t+1.5);
+             break;
       }
   }, []);
 
@@ -436,7 +490,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       comboWindow: 0,
       hasHitInAir: false,
       hasDealtDamage: false,
-      hitStop: 0
+      hitStop: 0,
+      spellCooldown: 0
     };
     
     bossRef.current = {
@@ -460,7 +515,9 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       comboWindow: 0,
       animFrame: 0,
       animTimer: 0,
-      hitStop: 0
+      hitStop: 0,
+      isImmobilized: false,
+      immobilizeTimer: 0
     };
 
     particlesRef.current = [];
@@ -472,7 +529,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     setScore(0);
     
     if (audioCtxRef.current?.state === 'running') {
-        startBGM();
+        // startBGM(); // Disabled
     }
 
   }, [setPlayerHealth, setBossHealth, setStamina, setScore, startBGM]);
@@ -514,7 +571,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         if (center1 < center2) {
             e1.pos.x -= pushForce;
             if (e2.type === 'boss') {
-                e2.vx = 0;
+                if (!e2.isImmobilized) e2.vx = 0;
             } else {
                 e2.pos.x += pushForce;
             }
@@ -522,7 +579,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         } else {
             e1.pos.x += pushForce;
             if (e2.type === 'boss') {
-                e2.vx = 0;
+                if (!e2.isImmobilized) e2.vx = 0;
             } else {
                 e2.pos.x -= pushForce;
             }
@@ -550,14 +607,40 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       if (player.attackCooldown > 0) player.attackCooldown--;
       if (player.dodgeCooldown > 0) player.dodgeCooldown--;
       if (player.comboWindow > 0) player.comboWindow--;
-      
+      if (player.spellCooldown && player.spellCooldown > 0) player.spellCooldown--;
+
       if (player.comboWindow === 0 && player.state !== 'attack') {
           player.comboCount = 0;
       }
 
       const isAttackPressed = keysRef.current['Space'] || keysRef.current['KeyJ'];
-      const isDodgePressed = keysRef.current['ShiftLeft'] || keysRef.current['KeyK'] || keysRef.current['KeyL'];
-      
+      // Removed KeyK from dodge
+      const isDodgePressed = keysRef.current['ShiftLeft'] || keysRef.current['KeyL']; 
+      const isSpellPressed = keysRef.current['KeyK'];
+
+      // --- Spell Logic (Immobilize) ---
+      if (isSpellPressed && (!player.spellCooldown || player.spellCooldown <= 0) && boss && !boss.isDead) {
+           const dist = boss.pos.x - player.pos.x;
+           const range = 600; // INCREASED RANGE
+           
+           // Check facing and range
+           const facingTarget = (player.facingRight && dist > 0) || (!player.facingRight && dist < 0);
+           
+           if (facingTarget && Math.abs(dist) < range) {
+               boss.isImmobilized = true;
+               boss.immobilizeTimer = 300; // 5 seconds
+               // Lock visual state
+               boss.state = 'idle'; 
+               boss.vx = 0;
+               boss.vy = 0;
+               
+               playSound('spell');
+               createParticles(boss.pos.x + boss.width/2, boss.pos.y + boss.height/2, '#fbbf24', 30, 4);
+               // Removed long CD, set small debounce to prevent frame tearing
+               player.spellCooldown = 30; 
+           }
+      }
+
       if (isDodgePressed && player.dodgeCooldown <= 0 && player.state !== 'dodge' && player.state !== 'hit') {
           player.state = 'dodge';
           player.animFrame = 0;
@@ -807,35 +890,49 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
               if (shouldRegisterHit) { 
                  boss.health -= damage;
-                 let kForce = 4;
-                 if (player.comboCount === 4) kForce = 15;
-                 if (player.state === 'heavy_attack') kForce = 25; 
-                 
-                 boss.vx = player.facingRight ? kForce : -kForce;
-                 boss.state = 'hit';
-                 boss.animTimer = 0;
+                 const isHeavyHit = player.state === 'heavy_attack' || player.comboCount === 4;
+
+                 // Immobilized Boss Logic on Hit
+                 if (boss.isImmobilized) {
+                    // 1. Ignore State Change (Hit Stun)
+                    // 2. Ignore Knockback (vx)
+                    // 3. Allow Shake
+                    shakeRef.current = 5;
+                    createParticles(boss.pos.x + boss.width/2, boss.pos.y + boss.height/2, '#fbbf24', 12);
+                    playSound(isHeavyHit ? 'hit_heavy' : 'hit');
+                 } else {
+                     // Normal Hit Logic
+                     let kForce = 4;
+                     if (player.comboCount === 4) kForce = 15;
+                     if (player.state === 'heavy_attack') kForce = 25; 
+                     
+                     boss.vx = player.facingRight ? kForce : -kForce;
+                     boss.state = 'hit';
+                     boss.animTimer = 0;
+                     
+                     let stopDuration = 10; 
+                     let shakeInt = 5;
+
+                     if (player.state === 'heavy_attack' || player.comboCount === 4) {
+                         stopDuration = 15; 
+                         shakeInt = 20;
+                         createParticles(boss.pos.x + boss.width/2, boss.pos.y + boss.height, '#fff', 20, 15);
+                     } else if (isMultiHit) {
+                         stopDuration = 8; 
+                         shakeInt = 5;
+                     }
+
+                     player.hitStop = stopDuration; 
+                     boss.hitStop = stopDuration + 2; 
+                     shakeRef.current = shakeInt; 
+                     playSound(isHeavyHit ? 'hit_heavy' : 'hit');
+                 }
+
                  setBossHealth(boss.health);
                  
                  const pColor = (player.state === 'heavy_attack' || player.comboCount === 4) ? '#ef4444' : '#fbbf24';
                  createParticles(boss.pos.x + boss.width/2, boss.pos.y + boss.height/2, pColor, 12); 
-                 playSound('hit');
-
-                 let stopDuration = 10; 
-                 let shakeInt = 5;
-
-                 if (player.state === 'heavy_attack' || player.comboCount === 4) {
-                     stopDuration = 15; 
-                     shakeInt = 20;
-                     createParticles(boss.pos.x + boss.width/2, boss.pos.y + boss.height, '#fff', 20, 15);
-                 } else if (isMultiHit) {
-                     stopDuration = 8; 
-                     shakeInt = 5;
-                 }
-
-                 player.hitStop = stopDuration; 
-                 boss.hitStop = stopDuration + 2; 
-                 shakeRef.current = shakeInt; 
-
+                 
                  setScore(s => s + Math.floor(damage));
                  
                  if (isMultiHit) {
@@ -923,133 +1020,151 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
     // --- 2. Boss Logic ---
     if (boss && !boss.isDead) {
-      if (boss.hitStop > 0) {
-          boss.hitStop--;
+      if (boss.isImmobilized) {
+          // FROZEN STATE
+          boss.vx = 0;
+          boss.vy = 0;
+          // boss.state stays as 'idle' or whatever it was when frozen, but we stop logic
+          if (boss.immobilizeTimer && boss.immobilizeTimer > 0) {
+             boss.immobilizeTimer--;
+             
+             // Golden Particles emission
+             if (boss.immobilizeTimer % 10 === 0) {
+                 createParticles(boss.pos.x + Math.random()*boss.width, boss.pos.y + Math.random()*boss.height, '#fbbf24', 1, 1);
+             }
+          } else {
+             boss.isImmobilized = false;
+          }
       } else {
-        boss.facingRight = player.pos.x > boss.pos.x;
-        const distance = Math.abs(player.pos.x - boss.pos.x);
-        const PREFERRED_DISTANCE = 220;
-        
-        if (boss.state !== 'hit') {
-            if (boss.state === 'run' && distance < 250 && distance > 100 && Math.random() < 0.02 && boss.attackCooldown <= 0) {
-                boss.state = 'jump_smash'; 
-                boss.vy = -15; 
-                boss.vx = boss.facingRight ? 8 : -8;
-                boss.attackCooldown = 150;
-            }
-            else if (boss.state === 'run') {
-                if (distance < 350 && distance > 200 && Math.random() < 0.05) {
-                  boss.state = 'standoff';
-                  boss.animTimer = 0;
+        // NORMAL STATE
+        if (boss.hitStop > 0) {
+            boss.hitStop--;
+        } else {
+            boss.facingRight = player.pos.x > boss.pos.x;
+            const distance = Math.abs(player.pos.x - boss.pos.x);
+            const PREFERRED_DISTANCE = 220;
+            
+            if (boss.state !== 'hit') {
+                if (boss.state === 'run' && distance < 250 && distance > 100 && Math.random() < 0.02 && boss.attackCooldown <= 0) {
+                    boss.state = 'jump_smash'; 
+                    boss.vy = -15; 
+                    boss.vx = boss.facingRight ? 8 : -8;
+                    boss.attackCooldown = 150;
                 }
-                if (distance < PREFERRED_DISTANCE) {
+                else if (boss.state === 'run') {
+                    if (distance < 350 && distance > 200 && Math.random() < 0.05) {
+                    boss.state = 'standoff';
+                    boss.animTimer = 0;
+                    }
+                    if (distance < PREFERRED_DISTANCE) {
+                        boss.state = 'standoff';
+                    }
+                }
+
+                if (boss.state === 'jump_smash') {
+                    if (boss.pos.y + boss.height >= GROUND_Y) {
+                        boss.state = 'attack'; 
+                        shakeRef.current = 10;
+                        createParticles(boss.pos.x + boss.width/2, GROUND_Y, '#581c87', 10);
+                        if (distance < 150 && player.pos.y + player.height >= GROUND_Y - 20 && player.state !== 'dodge') {
+                            player.health -= BOSS_DAMAGE * 1.5;
+                            player.vx = boss.facingRight ? 15 : -15;
+                            player.vy = -5;
+                            player.state = 'hit';
+                            player.hitStop = 12; 
+                            boss.hitStop = 8; 
+                            setPlayerHealth(player.health);
+                        }
+                        setTimeout(() => { if(boss.state === 'attack') boss.state = 'idle'; }, 500);
+                    }
+                }
+                else if (boss.state === 'standoff') {
+                    const diff = distance - PREFERRED_DISTANCE;
+                    const tolerance = 30; 
+                    if (diff < -tolerance) {
+                        boss.vx = boss.facingRight ? -1.5 : 1.5;
+                        boss.state = 'run'; 
+                    } else if (diff > tolerance) {
+                        boss.vx = boss.facingRight ? 1.0 : -1.0;
+                        boss.state = 'run'; 
+                    } else {
+                        boss.vx = 0;
+                        if (Math.random() < 0.01) boss.state = 'idle'; 
+                    }
+                    
+                    if (boss.attackCooldown <= 0 && distance < 120) {
+                        boss.state = 'attack';
+                    }
+                }
+                else if (boss.state !== 'attack') {
+                if (distance > 350) {
+                    boss.vx += boss.facingRight ? 0.2 : -0.2;
+                    boss.vx = Math.max(Math.min(boss.vx, 2), -2);
+                    boss.state = 'run';
+                } else {
                     boss.state = 'standoff';
                 }
-            }
-
-            if (boss.state === 'jump_smash') {
-                if (boss.pos.y + boss.height >= GROUND_Y) {
-                    boss.state = 'attack'; 
-                    shakeRef.current = 10;
-                    createParticles(boss.pos.x + boss.width/2, GROUND_Y, '#581c87', 10);
-                    if (distance < 150 && player.pos.y + player.height >= GROUND_Y - 20 && player.state !== 'dodge') {
-                          player.health -= BOSS_DAMAGE * 1.5;
-                          player.vx = boss.facingRight ? 15 : -15;
-                          player.vy = -5;
-                          player.state = 'hit';
-                          player.hitStop = 12; 
-                          boss.hitStop = 8; 
-                          setPlayerHealth(player.health);
-                    }
-                    setTimeout(() => { if(boss.state === 'attack') boss.state = 'idle'; }, 500);
-                }
-            }
-            else if (boss.state === 'standoff') {
-                const diff = distance - PREFERRED_DISTANCE;
-                const tolerance = 30; 
-                if (diff < -tolerance) {
-                    boss.vx = boss.facingRight ? -1.5 : 1.5;
-                    boss.state = 'run'; 
-                } else if (diff > tolerance) {
-                    boss.vx = boss.facingRight ? 1.0 : -1.0;
-                    boss.state = 'run'; 
-                } else {
-                    boss.vx = 0;
-                    if (Math.random() < 0.01) boss.state = 'idle'; 
-                }
                 
-                if (boss.attackCooldown <= 0 && distance < 120) {
+                if (boss.attackCooldown <= 0 && distance < 100 && !player.isDead) {
                     boss.state = 'attack';
+                    boss.attackCooldown = 100;
+                    
+                    setTimeout(() => {
+                        if(boss.state === 'attack' && !boss.isDead && !boss.isImmobilized) { 
+                            const currDist = Math.abs(player.pos.x - boss.pos.x);
+                            const heightDiff = Math.abs(player.pos.y - boss.pos.y);
+                            if (currDist < 110 && heightDiff < 50 && player.state !== 'dodge') {
+                                player.health -= BOSS_DAMAGE;
+                                player.vx = boss.facingRight ? 10 : -10;
+                                player.vy = -5;
+                                player.state = 'hit';
+                                player.animFrame = 0;
+                                player.hitStop = 8;
+                                boss.hitStop = 6;
+                                setPlayerHealth(player.health);
+                                shakeRef.current = 10;
+                                createParticles(player.pos.x, player.pos.y, '#ef4444', 10);
+                                playSound('hit');
+                                if (player.health <= 0) {
+                                    player.isDead = true;
+                                    setGameState(GameState.GAME_OVER);
+                                }
+                            }
+                        }
+                    }, 400);
                 }
             }
-            else if (boss.state !== 'attack') {
-              if (distance > 350) {
-                  boss.vx += boss.facingRight ? 0.2 : -0.2;
-                  boss.vx = Math.max(Math.min(boss.vx, 2), -2);
-                  boss.state = 'run';
-              } else {
-                  boss.state = 'standoff';
-              }
-              
-              if (boss.attackCooldown <= 0 && distance < 100 && !player.isDead) {
-                  boss.state = 'attack';
-                  boss.attackCooldown = 100;
-                  
-                  setTimeout(() => {
-                      if(boss.state === 'attack' && !boss.isDead) { 
-                          const currDist = Math.abs(player.pos.x - boss.pos.x);
-                          const heightDiff = Math.abs(player.pos.y - boss.pos.y);
-                          if (currDist < 110 && heightDiff < 50 && player.state !== 'dodge') {
-                              player.health -= BOSS_DAMAGE;
-                              player.vx = boss.facingRight ? 10 : -10;
-                              player.vy = -5;
-                              player.state = 'hit';
-                              player.animFrame = 0;
-                              player.hitStop = 8;
-                              boss.hitStop = 6;
-                              setPlayerHealth(player.health);
-                              shakeRef.current = 10;
-                              createParticles(player.pos.x, player.pos.y, '#ef4444', 10);
-                              playSound('hit');
-                              if (player.health <= 0) {
-                                  player.isDead = true;
-                                  setGameState(GameState.GAME_OVER);
-                              }
-                          }
-                      }
-                  }, 400);
-              }
-          }
-        } else if (boss.state === 'hit') {
-            boss.vx *= 0.9;
-            if (Math.abs(boss.vx) < 0.1) boss.state = 'idle';
-             if (boss.state === 'hit' && boss.animTimer > 20) {
-                  boss.state = 'idle';
-             }
-        }
-        
-        if (boss.attackCooldown > 0) boss.attackCooldown--;
-        boss.vy += GRAVITY;
-        boss.pos.x += boss.vx;
-        boss.pos.y += boss.vy;
-        
-        if (boss.pos.y + boss.height > GROUND_Y) {
-          boss.pos.y = GROUND_Y - boss.height;
-          boss.vy = 0;
-        }
-        boss.pos.x = Math.max(0, Math.min(boss.pos.x, 1200 - boss.width));
+            } else if (boss.state === 'hit') {
+                boss.vx *= 0.9;
+                if (Math.abs(boss.vx) < 0.1) boss.state = 'idle';
+                if (boss.state === 'hit' && boss.animTimer > 20) {
+                    boss.state = 'idle';
+                }
+            }
+            
+            if (boss.attackCooldown > 0) boss.attackCooldown--;
+            boss.vy += GRAVITY;
+            boss.pos.x += boss.vx;
+            boss.pos.y += boss.vy;
+            
+            if (boss.pos.y + boss.height > GROUND_Y) {
+            boss.pos.y = GROUND_Y - boss.height;
+            boss.vy = 0;
+            }
+            boss.pos.x = Math.max(0, Math.min(boss.pos.x, 1200 - boss.width));
 
-        boss.animTimer++;
-        if (boss.animTimer > 10) {
-            boss.animFrame++;
-            boss.animTimer = 0;
-        }
-
-        if (boss.health <= 0) {
-          boss.isDead = true;
-          setGameState(GameState.VICTORY);
-        }
+            boss.animTimer++;
+            if (boss.animTimer > 10) {
+                boss.animFrame++;
+                boss.animTimer = 0;
+            }
       }
+      
+      if (boss.health <= 0) {
+            boss.isDead = true;
+            setGameState(GameState.VICTORY);
+        }
+    }
     }
 
     if (boss && !boss.isDead && !player.isDead) {
@@ -1446,7 +1561,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         
         let bossShakeX = 0;
         let bossShakeY = 0;
-        if (b.state === 'hit' && b.hitStop > 0) {
+        // Immobilize prevents shaking hit stun
+        if (b.state === 'hit' && b.hitStop > 0 && !b.isImmobilized) {
             bossShakeX = (Math.random() - 0.5) * 6;
             bossShakeY = (Math.random() - 0.5) * 6;
         }
@@ -1454,17 +1570,34 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         ctx.save();
         ctx.translate(bossShakeX, bossShakeY);
 
-        if (b.state === 'hit' && b.hitStop > 0) {
+        if (b.state === 'hit' && b.hitStop > 0 && !b.isImmobilized) {
              ctx.fillStyle = '#fff'; 
              ctx.fillRect(bx, by, b.width, b.height);
-        } else if (b.state === 'hit') {
+        } else if (b.state === 'hit' && !b.isImmobilized) {
              ctx.fillStyle = '#fff';
              ctx.fillRect(bx, by, b.width, b.height);
         } else {
-            const bColor = b.state === 'jump_smash' ? '#7e22ce' : '#581c87';
+            // Boss Color Logic
+            let bColor = b.state === 'jump_smash' ? '#7e22ce' : '#581c87';
+            let bAccent = '#3b0764';
+            
+            // Gold tint if immobilized
+            if (b.isImmobilized) {
+                bColor = '#fbbf24'; // Gold
+                bAccent = '#d97706'; // Darker Gold
+                
+                // Add glow
+                ctx.shadowColor = '#fbbf24';
+                ctx.shadowBlur = 15;
+            }
+            
             drawRect(ctx, bx, by, b.width, b.height, bColor); 
-            drawRect(ctx, bx - 10, by + 10, 20, 60, '#3b0764'); 
-            drawRect(ctx, bx + b.width - 10, by + 10, 20, 60, '#3b0764');
+            drawRect(ctx, bx - 10, by + 10, 20, 60, bAccent); 
+            drawRect(ctx, bx + b.width - 10, by + 10, 20, 60, bAccent);
+            
+            ctx.shadowBlur = 0;
+            
+            // Eye/Details
             drawRect(ctx, b.facingRight ? bx + b.width - 30 : bx + 10, by + 20, 10, 5, '#ef4444');
             
             if (b.state === 'standoff') {
