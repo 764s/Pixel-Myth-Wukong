@@ -1,3 +1,4 @@
+
 import React, { useRef, useEffect, useCallback } from 'react';
 import { GameState, Entity, Particle } from '../types';
 
@@ -12,7 +13,7 @@ const GROUND_Y = 400;
 const ATTACK_RANGE = 90;
 const ATTACK_DAMAGE = 12; 
 const COMBO_2_DAMAGE = 18;
-const COMBO_3_DAMAGE = 30; // Single hit, higher damage
+const COMBO_3_DAMAGE = 14; // Adjusted for 3 hits (Total ~42 dmg)
 const COMBO_4_SLAM_DAMAGE = 45; // Main slam damage
 const HEAVY_ATTACK_DAMAGE = 60;
 const HEAVY_ATTACK_RANGE = 300; 
@@ -56,6 +57,10 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const reqRef = useRef<number>(0);
   const audioCtxRef = useRef<AudioContext | null>(null);
+  
+  // Time Step Refs
+  const lastTimeRef = useRef<number>(0);
+  const accumulatorRef = useRef<number>(0);
   
   // BGM Refs
   const bgmRunningRef = useRef<boolean>(false);
@@ -821,7 +826,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                            player.comboCount = 1;
                        }
                        
-                       if (player.comboCount === 3) player.vy = -6.5; 
+                       if (player.comboCount === 3) player.vy = -5.5; 
                        if (player.comboCount === 4) {
                            player.vy = -5; 
                            player.attackCooldown = 30; 
@@ -864,7 +869,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                        if (player.comboCount === 1 || player.comboCount === 2) player.attackCooldown = 7;
                        else player.attackCooldown = 11;
                    }
-                   if (player.comboCount === 3) player.attackCooldown = 20; 
+                   if (player.comboCount === 3) player.attackCooldown = 0; 
 
                    player.animFrame = 0;
                 }
@@ -934,7 +939,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       if (player.state === 'heavy_attack') activeFrames = player.animFrame >= 2 && player.animFrame <= 6; 
       else if (player.state === 'attack') {
           if (player.comboCount === 1 || player.comboCount === 2) activeFrames = player.animFrame === 1 || player.animFrame === 2;
-          else if (player.comboCount === 3) activeFrames = player.animFrame >= 1 && player.animFrame <= 5; 
+          // Combo 3 Active Frames adjusted for 3-hit duration (0-12)
+          else if (player.comboCount === 3) activeFrames = player.animFrame >= 0 && player.animFrame <= 12; 
           else if (player.comboCount === 4) activeFrames = player.animFrame >= 5 && player.animFrame <= 10; 
       } 
       else if (player.state === 'air_attack') activeFrames = true;
@@ -943,14 +949,16 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
           let range = ATTACK_RANGE;
           let damage = ATTACK_DAMAGE;
           let isAir = player.state === 'air_attack' || (player.state === 'attack' && player.comboCount === 3);
-          let isMultiHit = player.state === 'air_attack'; 
+          // Multi-hit applies to Air Attack AND Attack 3 (Combo Count 3)
+          let isMultiHit = player.state === 'air_attack' || (player.state === 'attack' && player.comboCount === 3);
 
           if (player.state === 'heavy_attack') {
               range = HEAVY_ATTACK_RANGE;
               damage = HEAVY_ATTACK_DAMAGE;
           } else if (isAir) {
               damage = (player.state === 'attack' && player.comboCount === 3) ? COMBO_3_DAMAGE : AIR_ATTACK_DAMAGE;
-              range = ATTACK_RANGE * 1.5;
+              // Combo 3: Adjusted range to match visual spin (approx 1.5x)
+              range = (player.state === 'attack' && player.comboCount === 3) ? ATTACK_RANGE * 1.5 : ATTACK_RANGE * 1.5;
           } else if (player.state === 'attack') {
               if (player.comboCount === 2) { damage = COMBO_2_DAMAGE; range = ATTACK_RANGE * 1.2; }
               if (player.comboCount === 4) {
@@ -1069,8 +1077,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                         else if (isMultiHit) stopDuration = 8;
                         
                         // NEW: Ensure minimum hitstop for break is at least 18 frames
-                        const MIN_BREAK_STUN = 18;
-                        const finalStun = Math.max(stopDuration, MIN_BREAK_STUN);
+                        const finalStun = Math.max(stopDuration, 18);
 
                         player.hitStop = finalStun;
                         boss.hitStop = finalStun;
@@ -1087,9 +1094,10 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                     }
                  } else {
                      // Normal Hit Logic
-                     let kForce = 4;
-                     if (player.comboCount === 4) kForce = 15;
-                     if (player.state === 'heavy_attack') kForce = 25; 
+                     // REVISED KNOCKBACK: Only Combo 4 (Finisher) and Heavy Attack deal knockback.
+                     let kForce = 0; 
+                     if (player.comboCount === 4) kForce = 8; // Reduced from 15 to 8 (Medium push)
+                     if (player.state === 'heavy_attack') kForce = 12; // Reduced from 25 to 12 (Hard push)
                      
                      boss.vx = player.facingRight ? kForce : -kForce;
                      boss.state = 'hit';
@@ -1103,14 +1111,25 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                          shakeInt = 20;
                          createParticles(boss.pos.x + boss.width/2, boss.pos.y + boss.height, '#fff', 20, 15);
                      } else if (isMultiHit) {
-                         stopDuration = 8; 
-                         shakeInt = 5;
+                         // Multi-Hit Logic (Air or Combo 3)
+                         if (player.comboCount === 3) {
+                             // Combo 3 Spin: Snappy but visible hits
+                             stopDuration = 8; // Increased from 6 to 8 for better weight
+                             shakeInt = 2; // Added slight shake
+                         } else {
+                             // Air Attack: Keep original feel
+                             stopDuration = 8; 
+                             shakeInt = 5;
+                         }
                      } else if (player.comboCount === 1 || player.comboCount === 2) {
-                         stopDuration = 6;
+                         // Increased hitstop for light attacks to improve feel
+                         stopDuration = 4; 
                      }
 
                      player.hitStop = stopDuration; 
-                     boss.hitStop = stopDuration + 2; 
+                     // Sync boss hitstop
+                     boss.hitStop = stopDuration;
+
                      shakeRef.current = shakeInt; 
                      playSound(isHeavyHit ? 'hit_heavy' : 'hit');
                  }
@@ -1123,7 +1142,15 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                  setScore(s => s + Math.floor(damage));
                  
                  if (isMultiHit) {
-                     player.attackCooldown = 18; 
+                     if (player.comboCount === 3) {
+                         // HIT FREQUENCY LOGIC FOR 3 HITS in 12 frames (1 turn):
+                         // Hits at frames 0, 6, 12 (every 6 frames)
+                         // Cooldown 11 ticks (since update speed 1 = 2 ticks/frame -> 6 frames = 12 ticks)
+                         player.attackCooldown = 11;
+                     } else {
+                         // Standard Air Attack cooldown
+                         player.attackCooldown = 18; 
+                     }
                  } else {
                      player.hasDealtDamage = true;
                  }
@@ -1160,7 +1187,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       }
       
       if (player.state === 'air_attack' || (player.state === 'attack' && player.comboCount === 3)) {
-           const limit = player.comboCount === 3 ? 6 : 18;
+           // Combo 3 duration set to 12 to ensure 3-hit sequence fits naturally (1 rotation)
+           const limit = player.comboCount === 3 ? 12 : 18; 
            if (player.animFrame > limit) { 
                if (player.comboCount === 3) {
                    player.state = 'attack';
@@ -1186,9 +1214,9 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       let animSpeed = 8;
       if (player.state === 'run') animSpeed = 5;
       if (player.state === 'attack') {
-          if (player.comboCount === 3) animSpeed = 3; 
+          if (player.comboCount === 3) animSpeed = 1; // Fastest spin (2 ticks per frame)
           else if (player.comboCount === 4) animSpeed = 1; 
-          else animSpeed = 3; // Faster light attack (was 5)
+          else animSpeed = 3; // Faster light attack
       }
       if (player.state === 'heavy_attack') animSpeed = 2; 
       if (player.state === 'dodge') animSpeed = 3;
@@ -1484,7 +1512,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
   const getAnimSpeed = (p: Entity) => {
       if (p.state === 'run') return 5;
       if (p.state === 'attack') {
-          if (p.comboCount === 3) return 3;
+          if (p.comboCount === 3) return 1; // UPDATED HERE
           if (p.comboCount === 4) return 1;
           return 3; // Faster default attack speed (was 5)
       }
@@ -1499,6 +1527,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     const { width: w, height: h, state, animFrame, comboCount, hitStop } = p;
     
     const speed = getAnimSpeed(p);
+    // Using just division as speed is guaranteed to be >= 1 by getAnimSpeed logic
     const smoothT = Math.min(1, p.animTimer / speed);
     const smoothFrame = animFrame + smoothT;
 
@@ -1617,9 +1646,9 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
              ctx.restore();
         }
         else if (comboCount === 3) {
-            const maxFrame = 6;
-            const t = Math.min(maxFrame, smoothFrame);
-            const angle = (t / maxFrame) * (Math.PI * 2);
+            // Rotate continuously based on frame count
+            // REVISED for 3 hits in 360 degrees over 12 frames
+            const angle = (smoothFrame / 12) * (Math.PI * 2);
 
             ctx.translate(0, -35); 
             
@@ -1627,8 +1656,9 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
             ctx.fillStyle = cGold;
             ctx.globalAlpha = 0.6;
             ctx.beginPath();
-            ctx.arc(0, 0, 85, angle - 1.5, angle, false);
-            ctx.arc(0, 0, 70, angle, angle - 1.5, true);
+            // Increased visual radius to 100
+            ctx.arc(0, 0, 100, angle - 1.5, angle, false);
+            ctx.arc(0, 0, 85, angle, angle - 1.5, true);
             ctx.fill();
             ctx.globalAlpha = 1.0;
             ctx.globalCompositeOperation = 'source-over';
@@ -1642,14 +1672,15 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
             
             ctx.fillStyle = cGold;
             ctx.beginPath();
-            ctx.arc(0, 0, 75, 0, Math.PI*2);
+            ctx.arc(0, 0, 90, 0, Math.PI*2);
             ctx.fill();
             
             ctx.shadowBlur = 0;
             ctx.globalCompositeOperation = 'source-over';
 
-            drawRect(ctx, -70, -4, 140, 8, cStaff);
-            drawRect(ctx, -4, -70, 8, 140, cGold);
+            // Increased cross/staff visual size
+            drawRect(ctx, -100, -4, 200, 8, cStaff);
+            drawRect(ctx, -4, -100, 8, 200, cGold);
             ctx.restore();
         }
         else if (comboCount === 4) {
@@ -1860,9 +1891,12 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
              ctx.translate(-originX, -originY);
         }
 
-        // Shortened flash: Only flash during hitStop (freeze) and very briefly after (first 4 frames of recovery)
-        // This prevents the "white box" look from lasting the entire stun duration.
-        const isFlashing = b.state === 'hit' && !b.isImmobilized && (b.hitStop > 0 || b.animTimer < 4);
+        // Reduced Flash: Flicker 2-3 times during impact to avoid blinding "white screen"
+        // Only active during hitStop (freeze frames), creating a strobe effect.
+        const isFlashing = b.state === 'hit' && 
+                           !b.isImmobilized && 
+                           b.hitStop > 0 && 
+                           (b.hitStop % 5 > 2); 
 
         if (isFlashing) {
              ctx.fillStyle = '#fff'; 
@@ -1931,14 +1965,33 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
   }, []);
 
   useEffect(() => {
-    const loop = () => {
-      update();
+    const FIXED_TIME_STEP = 1000 / 60;
+
+    const loop = (timestamp: number) => {
+      if (lastTimeRef.current === 0) {
+          lastTimeRef.current = timestamp;
+      }
+      const deltaTime = timestamp - lastTimeRef.current;
+      lastTimeRef.current = timestamp;
+      
+      accumulatorRef.current += deltaTime;
+
+      // Safety cap to prevent spiral of death on lag spikes
+      if (accumulatorRef.current > 100) accumulatorRef.current = 100;
+
+      while (accumulatorRef.current >= FIXED_TIME_STEP) {
+        update();
+        accumulatorRef.current -= FIXED_TIME_STEP;
+      }
+      
       draw();
       reqRef.current = requestAnimationFrame(loop);
     };
 
     if (gameState === GameState.PLAYING) {
-      loop();
+      lastTimeRef.current = 0;
+      accumulatorRef.current = 0;
+      reqRef.current = requestAnimationFrame(loop);
     } else {
       draw();
     }
