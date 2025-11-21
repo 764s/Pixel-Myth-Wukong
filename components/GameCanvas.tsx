@@ -37,6 +37,11 @@ const lerp = (start: number, end: number, t: number) => start * (1 - t) + end * 
 const easeOutQuad = (t: number) => t * (2 - t);
 const easeInOutQuad = (t: number) => t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
 const easeInCubic = (t: number) => t * t * t;
+const easeOutBack = (x: number): number => {
+    const c1 = 1.70158;
+    const c3 = c1 + 1;
+    return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2);
+};
 
 // Combo 4 Configuration
 const C4_START_ANGLE = -2.5;
@@ -149,10 +154,12 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       // Attack 3 (Spin Cross) Logic
       c3Rotations: 2,     
       c3Speed: 50,        
-      c3ExtraHits: 10,    
+      c3ExtraHits: 5, // Reduced from 10 as requested
       c3TotalDamage: 45,  
       c3Stun: 3,
-      c3Interrupt: 0,          
+      c3Interrupt: 0,
+      c3JumpForce: -5.5, // New Param
+      c3GravityScale: 0.25, // New Param
 
       bossBehavior: 'normal', // normal, idle, kowtow, patrol, jump_loop
       bossPatrolRange: 200,
@@ -206,7 +213,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
   const particlesRef = useRef<Particle[]>([]);
   
   // NEW: Store real-time trails for Combo 4
-  const combo4TrailsRef = useRef<{ angle: number; life: number }[]>([]);
+  // Added 'length' to support dynamic staff growth visualization
+  const combo4TrailsRef = useRef<{ angle: number; life: number; length?: number }[]>([]);
   // Track TIME instead of angle for accurate physics-based interpolation
   const prevCombo4TimeRef = useRef<number | null>(null);
   
@@ -394,7 +402,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
   // --- SFX System ---
   const playSound = useCallback((
-      type: 'jump' | 'dash' | 'attack_light' | 'attack_heavy' | 'hit' | 'block' | 'charge' | 'spell' | 'hit_heavy' | 'break_spell'
+      type: 'jump' | 'dash' | 'attack_light' | 'attack_heavy' | 'hit' | 'block' | 'charge' | 'spell' | 'hit_heavy' | 'break_spell' | 'counter' | 'counter_hit'
   ) => {
       if (!audioCtxRef.current) return;
       const ctx = audioCtxRef.current;
@@ -571,6 +579,87 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
              dustG.connect(ctx.destination);
              dustSrc.start(t);
              break;
+          case 'counter':
+              // Sharp metal ping
+              const cOsc = ctx.createOscillator();
+              cOsc.type = 'square';
+              cOsc.frequency.setValueAtTime(1200, t);
+              cOsc.frequency.exponentialRampToValueAtTime(3000, t + 0.1);
+              const cGain = ctx.createGain();
+              cGain.gain.setValueAtTime(0.3, t);
+              cGain.gain.exponentialRampToValueAtTime(0.01, t + 0.3);
+              cOsc.connect(cGain);
+              cGain.connect(ctx.destination);
+              cOsc.start(t);
+              cOsc.stop(t + 0.3);
+              
+              // Low whoosh
+              const wOsc = ctx.createOscillator();
+              wOsc.type = 'triangle';
+              wOsc.frequency.setValueAtTime(100, t);
+              wOsc.frequency.linearRampToValueAtTime(300, t + 0.2);
+              const wGain = ctx.createGain();
+              wGain.gain.setValueAtTime(0.5, t);
+              wGain.gain.linearRampToValueAtTime(0, t + 0.3);
+              wOsc.connect(wGain);
+              wGain.connect(ctx.destination);
+              wOsc.start(t);
+              wOsc.stop(t + 0.3);
+              break;
+          case 'counter_hit':
+               // REDESIGNED: Crisper, sharper impact (Glass/Metal break feel)
+               
+               // 1. The "Ping" (Square wave with fast pitch drop)
+               const chOsc = ctx.createOscillator();
+               chOsc.type = 'square';
+               chOsc.frequency.setValueAtTime(1200, t);
+               chOsc.frequency.exponentialRampToValueAtTime(150, t + 0.3);
+               
+               const chGain = ctx.createGain();
+               chGain.gain.setValueAtTime(0.4, t);
+               chGain.gain.exponentialRampToValueAtTime(0.01, t + 0.3);
+               
+               chOsc.connect(chGain);
+               chGain.connect(ctx.destination);
+               chOsc.start(t);
+               chOsc.stop(t + 0.4);
+
+               // 2. The "Sparkle/Slice" (High Sine Sweep)
+               const chSpark = ctx.createOscillator();
+               chSpark.type = 'sine';
+               chSpark.frequency.setValueAtTime(2500, t);
+               chSpark.frequency.exponentialRampToValueAtTime(800, t + 0.15);
+               
+               const chSparkGain = ctx.createGain();
+               chSparkGain.gain.setValueAtTime(0.3, t);
+               chSparkGain.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
+               
+               chSpark.connect(chSparkGain);
+               chSparkGain.connect(ctx.destination);
+               chSpark.start(t);
+               chSpark.stop(t + 0.2);
+
+               // 3. Subtle Impact Noise (Crunch)
+               const chBuf = ctx.createBuffer(1, ctx.sampleRate * 0.2, ctx.sampleRate);
+               const chd = chBuf.getChannelData(0);
+               for(let i=0; i<chBuf.length; i++) chd[i] = (Math.random() * 2 - 1);
+               
+               const chSrc = ctx.createBufferSource();
+               chSrc.buffer = chBuf;
+               
+               const chFilt = ctx.createBiquadFilter();
+               chFilt.type = 'highpass';
+               chFilt.frequency.value = 2000; // Keep only high crunch
+               
+               const chNGain = ctx.createGain();
+               chNGain.gain.setValueAtTime(0.5, t);
+               chNGain.gain.exponentialRampToValueAtTime(0.01, t + 0.15);
+               
+               chSrc.connect(chFilt);
+               chFilt.connect(chNGain);
+               chNGain.connect(ctx.destination);
+               chSrc.start(t);
+               break;
       }
   }, []);
 
@@ -718,6 +807,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     }
   };
 
+
   // --- Main Game Loop ---
   const update = useCallback(() => {
     if (gameState !== GameState.PLAYING) return;
@@ -734,7 +824,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         infiniteHealth, infinitePlayerHealth,
         c1Damage, c1Stun, c1Shake, c1Interrupt,
         c2Damage, c2Stun, c2Shake, c2Interrupt,
-        c3Rotations, c3Speed, c3ExtraHits, c3TotalDamage, c3Stun, c3Radius, c3Interrupt,
+        c3Rotations, c3Speed, c3ExtraHits, c3TotalDamage, c3Stun, c3Radius, c3Interrupt, c3JumpForce, c3GravityScale,
         c4Length, c4Damage, c4Knockback, c4Stun, c4Shake, c4SlideSpeed, c4SlideFriction, c4Interrupt,
         heavyDamage, heavyRange, heavyKnockback, heavyStun, heavyShake, heavyInterrupt
     } = debugParamsRef.current;
@@ -763,43 +853,45 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
           }
       }
 
-      // Generate new trails for Combo 4 with Time-based Supersampling
+      // Generate new trails (Shared Logic for Combo 4)
+      let generateTrails = false;
+      let getAngleFn = (t: number) => 0;
+      let getLengthFn = (t: number) => 100; // Default Length fallback
+      let startTime = 0;
+      let endTime = 0;
+      let speed = 1;
+
       if (player.state === 'attack' && player.comboCount === 4) {
-          // Calculate continuous time 't'
-          const speed = 1; // Hardcoded speed for Combo 4
+          generateTrails = true;
+          getAngleFn = getCombo4AngleFromT;
+          getLengthFn = () => c4Length; // Constant length for Combo 4
+          startTime = 5;
+          endTime = 10;
+          speed = 1;
+      }
+
+      if (generateTrails) {
           const currentT = player.animFrame + (player.animTimer / speed);
 
-          // Active swing frames: 5 to 10. 
-          // hitStop must be 0 (moving) to generate new trails.
-          if (player.animFrame >= 5 && player.animFrame <= 10 && player.hitStop <= 0) {
-               
+          if (player.animFrame >= startTime && player.animFrame <= endTime && player.hitStop <= 0) {
                if (prevCombo4TimeRef.current === null) {
                    prevCombo4TimeRef.current = currentT;
-                   // Initial trail
                    combo4TrailsRef.current.push({
-                       angle: getCombo4AngleFromT(currentT),
-                       life: 0.5 // Slightly lower starting life
+                       angle: getAngleFn(currentT),
+                       life: 0.5,
+                       length: getLengthFn(currentT)
                    });
                } else {
                    const prevT = prevCombo4TimeRef.current;
-                   
-                   // If time has advanced, fill the gap
                    if (currentT > prevT) {
-                       // Density: Generate a trail every 'step' time units
                        let simT = prevT + trailStep;
-                       
                        while (simT <= currentT) {
-                           const angle = getCombo4AngleFromT(simT);
-                           
-                           // Age Compensation
+                           const angle = getAngleFn(simT);
                            const age = currentT - simT;
-                           const lifeStart = 0.5 - (age * trailDecay); // Adjusted to match decay
-                           
+                           const lifeStart = 0.5 - (age * trailDecay); 
+                           const len = getLengthFn(simT);
                            if (lifeStart > 0) {
-                               combo4TrailsRef.current.push({
-                                   angle: angle,
-                                   life: lifeStart
-                               });
+                               combo4TrailsRef.current.push({ angle: angle, life: lifeStart, length: len });
                            }
                            simT += trailStep;
                        }
@@ -807,8 +899,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                    prevCombo4TimeRef.current = currentT;
                }
           } else {
-              // If outside swing window or frozen, reset logic if completely done
-              if (player.animFrame > 10 || player.animFrame < 5) {
+              if (player.animFrame > endTime || player.animFrame < startTime) {
                   prevCombo4TimeRef.current = null;
               }
           }
@@ -818,7 +909,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
       const isAttackPressed = keysRef.current['KeyJ'];
       const isDodgePressed = keysRef.current['ShiftLeft'] || keysRef.current['KeyL']; 
-      const isSpellPressed = keysRef.current['KeyK'];
+      const isSpellPressed = keysRef.current['KeyI'];
 
       // --- Spell Logic (Immobilize) ---
       if (isSpellPressed && (!player.spellCooldown || player.spellCooldown <= 0) && boss && !boss.isDead) {
@@ -912,7 +1003,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                            player.comboCount = 1;
                        }
                        
-                       if (player.comboCount === 3) player.vy = -5.5; 
+                       if (player.comboCount === 3) player.vy = c3JumpForce; 
                        if (player.comboCount === 4) {
                            player.vy = -5; 
                            // Apply slide speed based on Debug Params
@@ -1009,7 +1100,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       }
 
       if (player.state === 'attack' && player.comboCount === 3) {
-         player.vy += GRAVITY * 0.25; 
+         player.vy += GRAVITY * c3GravityScale; 
       } else {
          player.vy += GRAVITY;
       }
@@ -1043,16 +1134,30 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
           }
           else if (player.comboCount === 4) activeFrames = player.animFrame >= 5 && player.animFrame <= 10; 
       } 
+      
+      // Recalculate heavy attack range dynamically
+      let dynamicHeavyReach = heavyRange;
+      if (player.state === 'heavy_attack') {
+          const speed = 2;
+          const t = player.animFrame + (player.animTimer / speed);
+          // Matches visual lerp: lerp(40, maxLen, easeOutQuad(t/6))
+          if (t < 6) {
+              const progress = easeOutQuad(Math.max(0, t/6));
+              dynamicHeavyReach = lerp(40, heavyRange, progress);
+          } else {
+              dynamicHeavyReach = heavyRange;
+          }
+      }
 
       if (isAttacking && activeFrames && boss && !boss.isDead) {
           let range = 90; // Default fallback
           let damage = 10; // Default fallback
           let interrupt = 0; // Default interrupt capability
-          let isAir = (player.state === 'attack' && player.comboCount === 3); // Check if doing spin in air (roughly)
+          let isAir = (player.state === 'attack' && player.comboCount === 3); // Check if delayed air attack
           let isMultiHit = (player.state === 'attack' && player.comboCount === 3);
 
           if (player.state === 'heavy_attack') {
-              range = heavyRange; // Use debug param
+              range = dynamicHeavyReach; // Use dynamic calculated range
               damage = heavyDamage; // Use debug param
               interrupt = heavyInterrupt;
           } else if (isAir) {
@@ -1087,20 +1192,21 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
           if (player.state === 'attack' && player.comboCount === 4) {
                const speed = 1;
                const currentT = player.animFrame + (player.animTimer / speed);
-               
-               // SWEEP: Check collision from previous frame to current frame
                const prevT = Math.max(5, currentT - 1.0);
                const sweepSteps = 6; 
 
                const pivotX = player.pos.x + player.width/2;
                const pivotY = player.pos.y + player.height - 35;
-               // Adjust checkpoints based on c4Length
-               const checkPoints = [c4Length * 0.3, c4Length * 0.6, c4Length * 0.9, c4Length]; 
+               
+               const staffLen = c4Length; // Use max length for sweep check
+               // Adjust checkpoints
+               const checkPoints = [staffLen * 0.3, staffLen * 0.6, staffLen * 0.9, staffLen]; 
                
                for (let s = 0; s <= sweepSteps; s++) {
                    if (hit) break; 
                    const t = lerp(prevT, currentT, s / sweepSteps);
                    const angle = getCombo4AngleFromT(t);
+                   
                    for (const r of checkPoints) {
                        const dir = player.facingRight ? 1 : -1;
                        const px = pivotX + (Math.cos(angle) * r * dir);
@@ -1137,9 +1243,10 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                   let attackBoxH = player.height;
 
                   if (player.state === 'heavy_attack') {
-                      const slamReach = heavyRange; // Match logic to visual length exactly
-                      attackBoxH += 50; // Some vertical forgiveness
-                      
+                      const slamReach = range; // range is already dynamicHeavyReach
+                      attackBoxY = player.pos.y + (player.height - 35) - 20; // Center - 20
+                      attackBoxH = 50; // +/- 25px height
+
                       if (player.facingRight) {
                           // Start from center of player
                           attackBoxX = player.pos.x + (player.width / 2);
@@ -1280,6 +1387,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                      boss.hitStop = stopDuration;
 
                      shakeRef.current = shakeInt; 
+                     
                      playSound(isHeavyHit ? 'hit_heavy' : 'hit');
                  }
 
@@ -1518,22 +1626,22 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                     const vertDist = Math.abs((player.pos.y + player.height) - headY);
                     
                     if (dist < range && vertDist < 40 && player.state !== 'dodge') {
-                            if (infinitePlayerHealth && player.health - BOSS_KOWTOW_DAMAGE <= 0) {
-                                player.health = player.maxHealth;
-                            } else {
-                                player.health -= BOSS_KOWTOW_DAMAGE;
-                            }
+                        if (infinitePlayerHealth && player.health - BOSS_KOWTOW_DAMAGE <= 0) {
+                            player.health = player.maxHealth;
+                        } else {
+                            player.health -= BOSS_KOWTOW_DAMAGE;
+                        }
 
-                            player.state = 'hit';
-                            player.hitStop = 15;
-                            player.vy = -10; 
-                            player.vx = boss.facingRight ? 8 : -8; 
-                            setPlayerHealth(player.health);
-                            createParticles(player.pos.x, player.pos.y, '#ef4444', 8);
-                            if (player.health <= 0) {
-                                player.isDead = true;
-                                setGameState(GameState.GAME_OVER);
-                            }
+                        player.state = 'hit';
+                        player.hitStop = 15;
+                        player.vy = -10; 
+                        player.vx = boss.facingRight ? 8 : -8; 
+                        setPlayerHealth(player.health);
+                        createParticles(player.pos.x, player.pos.y, '#ef4444', 8);
+                        if (player.health <= 0) {
+                            player.isDead = true;
+                            setGameState(GameState.GAME_OVER);
+                        }
                     }
                 }
 
@@ -1568,7 +1676,11 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                         boss.state = 'attack'; 
                         shakeRef.current = 10;
                         createParticles(boss.pos.x + boss.width/2, GROUND_Y, '#581c87', 10);
-                        if (distance < 150 && player.pos.y + player.height >= GROUND_Y - 20 && player.state !== 'dodge') {
+                        
+                        const attackDist = Math.abs((player.pos.x + player.width/2) - (boss.pos.x + boss.width/2));
+                        const smashRange = 150;
+                        
+                        if (attackDist < smashRange && player.pos.y + player.height >= GROUND_Y - 20 && player.state !== 'dodge') {
                             const dmg = BOSS_DAMAGE * 1.5;
                             if (infinitePlayerHealth && player.health - dmg <= 0) {
                                 player.health = player.maxHealth;
@@ -2114,8 +2226,15 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     ctx.shadowColor = '#f8fafc'; 
     ctx.shadowBlur = 60;
     ctx.fillStyle = '#e5e7eb'; 
+    
+    // Parallax Moon
+    // Screen Position = World Position - Camera Position
+    // For distant objects, Screen Position should change very slowly as Camera moves.
+    // WorldPos = Offset + Camera * Factor (where factor < 1.0 close to 1.0)
+    const moonWorldX = 600 + cameraXRef.current * 0.92; 
+
     ctx.beginPath();
-    ctx.arc(cameraXRef.current + 600, 150, 50, 0, Math.PI * 2);
+    ctx.arc(moonWorldX, 150, 50, 0, Math.PI * 2);
     ctx.fill();
     ctx.shadowBlur = 0; 
 
@@ -2585,6 +2704,12 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
                                                         <div><div className="flex justify-between"><span>Hit Stop Frames</span><span className="text-yellow-500">{debugValues.c3Stun}</span></div>
                                                         <input type="range" min="0" max="20" step="1" value={debugValues.c3Stun} onChange={(e) => updateDebug('c3Stun', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+
+                                                        <div><div className="flex justify-between"><span>Jump Force</span><span className="text-yellow-500">{debugValues.c3JumpForce}</span></div>
+                                                        <input type="range" min="-15" max="0" step="0.5" value={debugValues.c3JumpForce} onChange={(e) => updateDebug('c3JumpForce', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+
+                                                        <div><div className="flex justify-between"><span>Gravity Scale</span><span className="text-yellow-500">{debugValues.c3GravityScale.toFixed(2)}</span></div>
+                                                        <input type="range" min="0" max="2" step="0.05" value={debugValues.c3GravityScale} onChange={(e) => updateDebug('c3GravityScale', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
 
                                                         <div><div className="flex justify-between"><span>Interrupt Action</span><span className="text-yellow-500">{debugValues.c3Interrupt}</span></div>
                                                         <div className="flex gap-2">
