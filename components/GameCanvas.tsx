@@ -1116,26 +1116,27 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                      const particleLifeFrames = 20;
                      const swSpeed = shockwaveRange / particleLifeFrames; 
                      
-                     for(let i=0; i<8; i++) {
+                     // ENHANCED PARTICLE LOOP
+                     for(let i=0; i<12; i++) { // Increased from 8
                          // Right Wave
                          particlesRef.current.push({
                              x: headX, 
                              y: headY - 2,
-                             vx: swSpeed * (0.9 + Math.random() * 0.2), // Fast outward speed
-                             vy: (Math.random() - 0.5) * 0.5, 
+                             vx: swSpeed * (0.8 + Math.random() * 0.4), // Varied speed for spread
+                             vy: (Math.random() - 0.5) * 2 - 1, // Slight kick up
                              life: 1.0,
-                             color: 'rgba(168, 162, 158, 0.5)', // Faint stone dust (Tailwind stone-400, low alpha)
-                             size: 2 + Math.random() * 2
+                             color: i % 2 === 0 ? 'rgba(120, 113, 108, 0.8)' : 'rgba(168, 162, 158, 0.5)', // Darker stone vs Light dust
+                             size: 2 + Math.random() * 4 // Larger variance
                          });
                          // Left Wave
                          particlesRef.current.push({
                              x: headX, 
                              y: headY - 2,
-                             vx: -swSpeed * (0.9 + Math.random() * 0.2),
-                             vy: (Math.random() - 0.5) * 0.5,
+                             vx: -swSpeed * (0.8 + Math.random() * 0.4),
+                             vy: (Math.random() - 0.5) * 2 - 1,
                              life: 1.0,
-                             color: 'rgba(168, 162, 158, 0.5)',
-                             size: 2 + Math.random() * 2
+                             color: i % 2 === 0 ? 'rgba(120, 113, 108, 0.8)' : 'rgba(168, 162, 158, 0.5)',
+                             size: 2 + Math.random() * 4
                          });
                      }
                      
