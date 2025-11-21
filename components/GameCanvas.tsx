@@ -90,11 +90,13 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       c1Damage: 12,
       c1Stun: 4,
       c1Shake: 2,
+      c1Interrupt: 0, // 0 = No, 1 = Yes
 
       // Combo 2 Logic
       c2Damage: 18,
       c2Stun: 6,
       c2Shake: 4,
+      c2Interrupt: 0,
 
       // Attack 4 (Fan) Visuals
       trailDecay: 0.2,
@@ -110,7 +112,9 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       c4Knockback: 8,
       c4Stun: 12,
       c4Shake: 20,
-      c4Slide: 2, 
+      c4SlideSpeed: 8, // Initial Burst Speed
+      c4SlideFriction: 0.85, // How much it slows down per frame
+      c4Interrupt: 1,
       
       // Heavy Attack (Charge) Visuals
       heavyWidth: 12,
@@ -123,6 +127,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       heavyKnockback: 12,
       heavyStun: 15,
       heavyShake: 15, // Default matches Stun
+      heavyInterrupt: 1,
 
       // Attack 3 (Spin Cross) Visuals
       c3Radius: 100,      
@@ -144,9 +149,13 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       c3Speed: 50,        
       c3ExtraHits: 10,    
       c3TotalDamage: 45,  
-      c3Stun: 3,          
+      c3Stun: 3,
+      c3Interrupt: 0,          
 
-      bossBehavior: 'normal', 
+      bossBehavior: 'normal', // normal, idle, kowtow, patrol, jump_loop
+      bossPatrolRange: 200,
+      bossPatrolSpeed: 1.5,
+
       infiniteHealth: false,
       infinitePlayerHealth: false
   });
@@ -719,12 +728,13 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     
     // Debug values
     const { 
-        trailDecay, trailStep, bossBehavior, infiniteHealth, infinitePlayerHealth,
-        c1Damage, c1Stun, c1Shake,
-        c2Damage, c2Stun, c2Shake,
-        c3Rotations, c3Speed, c3ExtraHits, c3TotalDamage, c3Stun, c3Radius,
-        c4Length, c4Damage, c4Knockback, c4Stun, c4Shake, c4Slide,
-        heavyDamage, heavyRange, heavyKnockback, heavyStun, heavyShake
+        trailDecay, trailStep, bossBehavior, bossPatrolRange, bossPatrolSpeed, 
+        infiniteHealth, infinitePlayerHealth,
+        c1Damage, c1Stun, c1Shake, c1Interrupt,
+        c2Damage, c2Stun, c2Shake, c2Interrupt,
+        c3Rotations, c3Speed, c3ExtraHits, c3TotalDamage, c3Stun, c3Radius, c3Interrupt,
+        c4Length, c4Damage, c4Knockback, c4Stun, c4Shake, c4SlideSpeed, c4SlideFriction, c4Interrupt,
+        heavyDamage, heavyRange, heavyKnockback, heavyStun, heavyShake, heavyInterrupt
     } = debugParamsRef.current;
 
     // --- 1. Player Logic ---
@@ -903,15 +913,16 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                        if (player.comboCount === 3) player.vy = -5.5; 
                        if (player.comboCount === 4) {
                            player.vy = -5; 
-                           player.vx = player.facingRight ? c4Slide : -c4Slide; // Apply forward slide
+                           // Apply slide speed based on Debug Params
+                           player.vx = player.facingRight ? c4SlideSpeed : -c4SlideSpeed; 
                            player.attackCooldown = 30; 
                        }
                        
                        let lunge = 3;
                        if (player.comboCount === 2) lunge = 6;
                        if (player.comboCount === 3) lunge = 4;
-                       if (player.comboCount === 4) lunge = 2; // Default base lunge, overridden by c4Slide above
-
+                       
+                       // Don't override c4SlideSpeed logic here
                        if (player.comboCount !== 4) {
                             player.vx = player.facingRight ? lunge : -lunge;
                        }
@@ -930,7 +941,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                             player.state = 'attack';
                             player.comboCount = 4; // Trigger Slam
                             player.vy = -5; 
-                            player.vx = player.facingRight ? c4Slide : -c4Slide; // Apply forward slide
+                            // Apply slide speed based on Debug Params
+                            player.vx = player.facingRight ? c4SlideSpeed : -c4SlideSpeed; 
                             player.attackCooldown = 30;
                             player.animFrame = 0;
                             player.hasDealtDamage = false;
@@ -984,7 +996,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       } else if (player.state === 'heavy_attack') {
          player.vx *= 0.85; 
       } else if (isFinisher) {
-         player.vx *= 0.90; 
+         // Apply specific friction for Attack 4 Slide
+         player.vx *= c4SlideFriction; 
       }
 
       if ((keysRef.current['Space']) && onGround && !movementLocked && player.state !== 'attack') {
@@ -1032,17 +1045,20 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       if (isAttacking && activeFrames && boss && !boss.isDead) {
           let range = 90; // Default fallback
           let damage = 10; // Default fallback
+          let interrupt = 0; // Default interrupt capability
           let isAir = (player.state === 'attack' && player.comboCount === 3); // Check if doing spin in air (roughly)
           let isMultiHit = (player.state === 'attack' && player.comboCount === 3);
 
           if (player.state === 'heavy_attack') {
               range = heavyRange; // Use debug param
               damage = heavyDamage; // Use debug param
+              interrupt = heavyInterrupt;
           } else if (isAir) {
               // --- COMBO 3 PARAMETERS ---
               range = c3Radius; // Use debug param for range
               const totalHits = 1 + c3ExtraHits;
               damage = c3TotalDamage / totalHits; // Distribute damage
+              interrupt = c3Interrupt;
 
               // Multi-hit Reset Logic
               // Divide total frames into segments. At start of each segment, reset damage.
@@ -1054,11 +1070,12 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                   c3HitsRef.current = currentHitIndex;
               }
           } else if (player.state === 'attack') {
-              if (player.comboCount === 1) { damage = c1Damage; range = 90; }
-              if (player.comboCount === 2) { damage = c2Damage; range = 110; }
+              if (player.comboCount === 1) { damage = c1Damage; range = 90; interrupt = c1Interrupt; }
+              if (player.comboCount === 2) { damage = c2Damage; range = 110; interrupt = c2Interrupt; }
               if (player.comboCount === 4) {
                   damage = c4Damage; // Use Debug Param
                   range = 180; // Approximate check, actual collision uses sweep
+                  interrupt = c4Interrupt;
               }
           }
           
@@ -1223,7 +1240,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                      let stopDuration = 10; 
                      let shakeInt = 5;
 
-                     const shouldStagger = player.state === 'heavy_attack' || player.comboCount === 4;
+                     // Should Stagger Check replaced with interrupt Logic
+                     const shouldStagger = interrupt > 0;
 
                      if (player.state === 'heavy_attack') {
                          stopDuration = heavyStun; // Use Debug Param
@@ -1253,6 +1271,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                      if (shouldStagger) {
                          boss.state = 'hit';
                          boss.animTimer = 0;
+                         boss.animFrame = 0; // Reset animation
                      }
 
                      player.hitStop = stopDuration; 
@@ -1319,7 +1338,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                player.state = 'attack';
                player.comboCount = 4;
                player.vy = -5; 
-               player.vx = player.facingRight ? c4Slide : -c4Slide;
+               // Apply slide speed from debug params
+               player.vx = player.facingRight ? c4SlideSpeed : -c4SlideSpeed;
                player.attackCooldown = 30;
                player.animFrame = 0;
                player.animTimer = 0;
@@ -1378,6 +1398,48 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                   boss.vx = 0;
               }
           }
+          else if (bossBehavior === 'patrol') {
+               // Patrol Logic: Walk back and forth
+               if (boss.state === 'attack' || boss.state === 'jump_smash' || boss.state === 'kowtow_attack') {
+                   // If actively attacking, let it finish, then go back to patrol
+                   // (No-op here, normal state transition handles it)
+               } else {
+                   boss.state = 'run';
+                   const patrolCenter = 600;
+                   if (boss.pos.x < patrolCenter - bossPatrolRange) {
+                       boss.facingRight = true;
+                   } else if (boss.pos.x > patrolCenter + bossPatrolRange) {
+                       boss.facingRight = false;
+                   }
+                   
+                   boss.vx = boss.facingRight ? bossPatrolSpeed : -bossPatrolSpeed;
+               }
+          }
+          else if (bossBehavior === 'jump_loop') {
+               // Jump Loop Logic: Jump in place, land, wait ~1s, repeat
+               if (boss.state !== 'jump_smash' && boss.state !== 'attack' && boss.state !== 'hit' && boss.state !== 'idle') {
+                   // Force idle if in some other state like run/kowtow
+                   boss.state = 'idle';
+                   boss.vx = 0;
+               }
+
+               if (boss.state === 'idle') {
+                   boss.vx = 0; // Enforce in-place
+                   
+                   // Trigger Jump if cooldown ready
+                   if (boss.attackCooldown <= 0) {
+                       boss.state = 'jump_smash';
+                       boss.vy = -22; // High vertical jump
+                       boss.vx = 0;
+                       
+                       // Set timer for next jump cycle:
+                       // Air time (~70 frames) + Land animation (~30 frames) + Wait time (60 frames) = ~160 frames
+                       boss.attackCooldown = 160; 
+                   }
+               }
+               // Note: Existing jump_smash landing logic handles the transition to 'attack' and then 'idle'.
+               // The countdown of boss.attackCooldown happens automatically at end of loop.
+          }
       }
 
       if (boss.isImmobilized) {
@@ -1392,14 +1454,14 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
           }
       } else {
         if (boss.hitStop <= 0) {
-            if (boss.state !== 'kowtow_attack') {
+            if (boss.state !== 'kowtow_attack' && bossBehavior !== 'patrol' && bossBehavior !== 'jump_loop') {
                 boss.facingRight = player.pos.x > boss.pos.x;
             }
 
             const distance = Math.abs(player.pos.x - boss.pos.x);
             const PREFERRED_DISTANCE = 220;
             
-            // Normal AI logic only if not forced to idle/kowtow loop via debug
+            // Normal AI logic only if not forced to specific states via debug
             if (bossBehavior === 'normal') {
                 const isBusy = ['attack', 'jump_smash', 'hit', 'kowtow_attack'].includes(boss.state);
                 if (!isBusy) {
@@ -1504,36 +1566,39 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                             boss.state = 'standoff';
                         }
                     }
+                }
 
-                    if (boss.state === 'jump_smash') {
-                        if (boss.pos.y + boss.height >= GROUND_Y) {
-                            boss.state = 'attack'; 
-                            shakeRef.current = 10;
-                            createParticles(boss.pos.x + boss.width/2, GROUND_Y, '#581c87', 10);
-                            if (distance < 150 && player.pos.y + player.height >= GROUND_Y - 20 && player.state !== 'dodge') {
-                                // INFINITE PLAYER HEALTH LOGIC (INTERCEPT BEFORE DAMAGE)
-                                const dmg = BOSS_DAMAGE * 1.5;
-                                if (infinitePlayerHealth && player.health - dmg <= 0) {
-                                    player.health = player.maxHealth;
-                                } else {
-                                    player.health -= dmg;
-                                }
-
-                                player.vx = boss.facingRight ? 15 : -15;
-                                player.vy = -5;
-                                player.state = 'hit';
-                                player.hitStop = 12; 
-                                boss.hitStop = 8; 
-                                setPlayerHealth(player.health);
-                                if (player.health <= 0) {
-                                    player.isDead = true;
-                                    setGameState(GameState.GAME_OVER);
-                                }
+                // Logic for Jump Smash Landing (Shared between Normal and Jump Loop modes)
+                if (boss.state === 'jump_smash') {
+                    if (boss.pos.y + boss.height >= GROUND_Y) {
+                        boss.state = 'attack'; 
+                        shakeRef.current = 10;
+                        createParticles(boss.pos.x + boss.width/2, GROUND_Y, '#581c87', 10);
+                        if (distance < 150 && player.pos.y + player.height >= GROUND_Y - 20 && player.state !== 'dodge') {
+                            // INFINITE PLAYER HEALTH LOGIC (INTERCEPT BEFORE DAMAGE)
+                            const dmg = BOSS_DAMAGE * 1.5;
+                            if (infinitePlayerHealth && player.health - dmg <= 0) {
+                                player.health = player.maxHealth;
+                            } else {
+                                player.health -= dmg;
                             }
-                            setTimeout(() => { if(boss.state === 'attack') boss.state = 'idle'; }, 500);
+
+                            player.vx = boss.facingRight ? 15 : -15;
+                            player.vy = -5;
+                            player.state = 'hit';
+                            player.hitStop = 12; 
+                            boss.hitStop = 8; 
+                            setPlayerHealth(player.health);
+                            if (player.health <= 0) {
+                                player.isDead = true;
+                                setGameState(GameState.GAME_OVER);
+                            }
                         }
+                        setTimeout(() => { if(boss.state === 'attack') boss.state = 'idle'; }, 500);
                     }
-                    else if (boss.state === 'standoff') {
+                }
+                else if (bossBehavior === 'normal') {
+                    if (boss.state === 'standoff') {
                         const diff = distance - PREFERRED_DISTANCE;
                         const tolerance = 30; 
                         if (diff < -tolerance) {
@@ -1579,6 +1644,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
             let bossAnimSpeed = 10;
             if (boss.state === 'kowtow_attack') bossAnimSpeed = 6; 
             if (boss.state === 'hit') bossAnimSpeed = 5;
+            if (bossBehavior === 'patrol') bossAnimSpeed = 8;
             
             boss.animTimer++;
             if (boss.animTimer > bossAnimSpeed) {
@@ -2264,18 +2330,32 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                                 <div className="flex flex-col gap-4">
                                     <div className="flex flex-col gap-2">
                                         <h3 className="font-bold text-gray-400 uppercase text-[10px] tracking-widest mb-1 border-b border-gray-800 pb-1">Boss Behavior</h3>
-                                        <div className="flex gap-2">
-                                            {['normal', 'idle', 'kowtow'].map(b => (
+                                        <div className="flex gap-2 flex-wrap">
+                                            {['normal', 'idle', 'kowtow', 'patrol', 'jump_loop'].map(b => (
                                                 <button
                                                     key={b}
                                                     onClick={() => updateDebug('bossBehavior', b)}
                                                     className={`px-3 py-1 rounded border ${debugValues.bossBehavior === b ? 'border-yellow-600 bg-yellow-900/30 text-yellow-500' : 'border-gray-700 bg-gray-800 text-gray-400'}`}
                                                 >
-                                                    {b.charAt(0).toUpperCase() + b.slice(1)}
+                                                    {b.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')}
                                                 </button>
                                             ))}
                                         </div>
                                     </div>
+
+                                    {/* Patrol Config */}
+                                    {debugValues.bossBehavior === 'patrol' && (
+                                        <div className="bg-gray-800/30 p-2 rounded border border-gray-800">
+                                            <h5 className="text-yellow-700 font-bold mb-2">Patrol Config</h5>
+                                            <div className="space-y-3">
+                                                <div><div className="flex justify-between"><span>Patrol Range</span><span className="text-yellow-500">{debugValues.bossPatrolRange}</span></div>
+                                                <input type="range" min="50" max="500" step="10" value={debugValues.bossPatrolRange} onChange={(e) => updateDebug('bossPatrolRange', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+
+                                                <div><div className="flex justify-between"><span>Patrol Speed</span><span className="text-yellow-500">{debugValues.bossPatrolSpeed}</span></div>
+                                                <input type="range" min="0.5" max="5" step="0.1" value={debugValues.bossPatrolSpeed} onChange={(e) => updateDebug('bossPatrolSpeed', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+                                            </div>
+                                        </div>
+                                    )}
 
                                     <div className="flex flex-col gap-2">
                                         <h3 className="font-bold text-gray-400 uppercase text-[10px] tracking-widest mb-1 border-b border-gray-800 pb-1">Cheats</h3>
@@ -2381,8 +2461,11 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                                                         <div><div className="flex justify-between"><span>Stun Frames</span><span className="text-yellow-500">{debugValues.c1Stun}</span></div>
                                                         <input type="range" min="0" max="20" step="1" value={debugValues.c1Stun} onChange={(e) => updateDebug('c1Stun', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
 
-                                                        <div><div className="flex justify-between"><span>Target Shake</span><span className="text-yellow-500">{debugValues.c1Shake}</span></div>
-                                                        <input type="range" min="0" max="10" step="1" value={debugValues.c1Shake} onChange={(e) => updateDebug('c1Shake', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+                                                        <div><div className="flex justify-between"><span>Interrupt Action</span><span className="text-yellow-500">{debugValues.c1Interrupt}</span></div>
+                                                        <div className="flex gap-2">
+                                                            <button onClick={() => updateDebug('c1Interrupt', 0)} className={`flex-1 py-1 text-xs border rounded ${debugValues.c1Interrupt === 0 ? 'bg-yellow-900/50 border-yellow-600' : 'border-gray-700'}`}>No</button>
+                                                            <button onClick={() => updateDebug('c1Interrupt', 1)} className={`flex-1 py-1 text-xs border rounded ${debugValues.c1Interrupt === 1 ? 'bg-yellow-900/50 border-yellow-600' : 'border-gray-700'}`}>Yes</button>
+                                                        </div></div>
                                                     </div>
                                                 </div>
                                                 <div className="bg-gray-800/30 p-2 rounded border border-gray-800">
@@ -2394,8 +2477,11 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                                                         <div><div className="flex justify-between"><span>Stun Frames</span><span className="text-yellow-500">{debugValues.c2Stun}</span></div>
                                                         <input type="range" min="0" max="20" step="1" value={debugValues.c2Stun} onChange={(e) => updateDebug('c2Stun', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
 
-                                                        <div><div className="flex justify-between"><span>Target Shake</span><span className="text-yellow-500">{debugValues.c2Shake}</span></div>
-                                                        <input type="range" min="0" max="10" step="1" value={debugValues.c2Shake} onChange={(e) => updateDebug('c2Shake', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+                                                        <div><div className="flex justify-between"><span>Interrupt Action</span><span className="text-yellow-500">{debugValues.c2Interrupt}</span></div>
+                                                        <div className="flex gap-2">
+                                                            <button onClick={() => updateDebug('c2Interrupt', 0)} className={`flex-1 py-1 text-xs border rounded ${debugValues.c2Interrupt === 0 ? 'bg-yellow-900/50 border-yellow-600' : 'border-gray-700'}`}>No</button>
+                                                            <button onClick={() => updateDebug('c2Interrupt', 1)} className={`flex-1 py-1 text-xs border rounded ${debugValues.c2Interrupt === 1 ? 'bg-yellow-900/50 border-yellow-600' : 'border-gray-700'}`}>Yes</button>
+                                                        </div></div>
                                                     </div>
                                                 </div>
                                              </div>
@@ -2463,6 +2549,12 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
                                                         <div><div className="flex justify-between"><span>Stun Frames</span><span className="text-yellow-500">{debugValues.c3Stun}</span></div>
                                                         <input type="range" min="0" max="20" step="1" value={debugValues.c3Stun} onChange={(e) => updateDebug('c3Stun', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+
+                                                        <div><div className="flex justify-between"><span>Interrupt Action</span><span className="text-yellow-500">{debugValues.c3Interrupt}</span></div>
+                                                        <div className="flex gap-2">
+                                                            <button onClick={() => updateDebug('c3Interrupt', 0)} className={`flex-1 py-1 text-xs border rounded ${debugValues.c3Interrupt === 0 ? 'bg-yellow-900/50 border-yellow-600' : 'border-gray-700'}`}>No</button>
+                                                            <button onClick={() => updateDebug('c3Interrupt', 1)} className={`flex-1 py-1 text-xs border rounded ${debugValues.c3Interrupt === 1 ? 'bg-yellow-900/50 border-yellow-600' : 'border-gray-700'}`}>Yes</button>
+                                                        </div></div>
                                                     </div>
                                                 </div>
                                             </div>
@@ -2519,8 +2611,17 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                                                         <div><div className="flex justify-between"><span>Target Shake</span><span className="text-yellow-500">{debugValues.c4Shake}</span></div>
                                                         <input type="range" min="0" max="40" step="1" value={debugValues.c4Shake} onChange={(e) => updateDebug('c4Shake', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
 
-                                                        <div><div className="flex justify-between"><span>Slide Distance</span><span className="text-yellow-500">{debugValues.c4Slide}</span></div>
-                                                        <input type="range" min="0" max="15" step="0.5" value={debugValues.c4Slide} onChange={(e) => updateDebug('c4Slide', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+                                                        <div><div className="flex justify-between"><span>Slide Speed</span><span className="text-yellow-500">{debugValues.c4SlideSpeed}</span></div>
+                                                        <input type="range" min="0" max="20" step="0.5" value={debugValues.c4SlideSpeed} onChange={(e) => updateDebug('c4SlideSpeed', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+
+                                                        <div><div className="flex justify-between"><span>Slide Friction</span><span className="text-yellow-500">{debugValues.c4SlideFriction.toFixed(2)}</span></div>
+                                                        <input type="range" min="0.5" max="0.99" step="0.01" value={debugValues.c4SlideFriction} onChange={(e) => updateDebug('c4SlideFriction', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+
+                                                        <div><div className="flex justify-between"><span>Interrupt Action</span><span className="text-yellow-500">{debugValues.c4Interrupt}</span></div>
+                                                        <div className="flex gap-2">
+                                                            <button onClick={() => updateDebug('c4Interrupt', 0)} className={`flex-1 py-1 text-xs border rounded ${debugValues.c4Interrupt === 0 ? 'bg-yellow-900/50 border-yellow-600' : 'border-gray-700'}`}>No</button>
+                                                            <button onClick={() => updateDebug('c4Interrupt', 1)} className={`flex-1 py-1 text-xs border rounded ${debugValues.c4Interrupt === 1 ? 'bg-yellow-900/50 border-yellow-600' : 'border-gray-700'}`}>Yes</button>
+                                                        </div></div>
                                                     </div>
                                                 </div>
                                              </div>
@@ -2561,6 +2662,12 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
                                                         <div><div className="flex justify-between"><span>Target Shake</span><span className="text-yellow-500">{debugValues.heavyShake}</span></div>
                                                         <input type="range" min="0" max="50" step="1" value={debugValues.heavyShake} onChange={(e) => updateDebug('heavyShake', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+
+                                                        <div><div className="flex justify-between"><span>Interrupt Action</span><span className="text-yellow-500">{debugValues.heavyInterrupt}</span></div>
+                                                        <div className="flex gap-2">
+                                                            <button onClick={() => updateDebug('heavyInterrupt', 0)} className={`flex-1 py-1 text-xs border rounded ${debugValues.heavyInterrupt === 0 ? 'bg-yellow-900/50 border-yellow-600' : 'border-gray-700'}`}>No</button>
+                                                            <button onClick={() => updateDebug('heavyInterrupt', 1)} className={`flex-1 py-1 text-xs border rounded ${debugValues.heavyInterrupt === 1 ? 'bg-yellow-900/50 border-yellow-600' : 'border-gray-700'}`}>Yes</button>
+                                                        </div></div>
                                                     </div>
                                                 </div>
                                              </div>
