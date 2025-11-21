@@ -1377,6 +1377,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     if (boss && !boss.isDead) {
       if (boss.hitStop > 0) {
           boss.hitStop--;
+          // When hitStop is active, we pause logic, movement, and animation.
+          // Note: The draw function still handles shake/flash effects during this state.
       } else {
           // Only apply AI Decision overrides if not reacting to damage
           const isReacting = boss.state === 'hit' || boss.isImmobilized;
@@ -1470,7 +1472,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                     if (Math.abs(boss.vx) > 0.1) boss.vx *= 0.8;
                     else boss.vx = 0;
 
-                    const IMPACT_FRAME = 4;
+                    const IMPACT_FRAME = 6; // Increased windup
                     
                     if (boss.animFrame === IMPACT_FRAME && boss.animTimer === 0) { 
                         playSound('hit_heavy');
@@ -1531,7 +1533,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                         }
                     }
 
-                    if (boss.animFrame > 12) {
+                    if (boss.animFrame > 16) { // Extended recovery
                         boss.state = 'idle';
                         boss.animFrame = 0;
                         boss.attackCooldown = 60; 
@@ -2149,14 +2151,17 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
              let angle = 0;
              const frame = b.animFrame;
              
-             if (frame <= 3) {
-                 angle = lerp(0, -0.4 * dir, frame/3);
+             if (frame <= 4) {
+                 angle = lerp(0, -0.6 * dir, frame/4);
              } 
-             else if (frame === 4) {
-                 angle = 1.6 * dir; 
+             else if (frame === 5) {
+                 angle = 0.8 * dir; 
+             }
+             else if (frame === 6) {
+                 angle = 1.6 * dir; // Impact
              }
              else {
-                 angle = lerp(1.6 * dir, 0, (frame - 5)/7);
+                 angle = lerp(1.6 * dir, 0, (frame - 7)/9);
              }
              
              ctx.rotate(angle);
@@ -2445,7 +2450,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                                                         <div><div className="flex justify-between"><span>Damage</span><span className="text-yellow-500">{debugValues.c1Damage}</span></div>
                                                         <input type="range" min="5" max="50" step="1" value={debugValues.c1Damage} onChange={(e) => updateDebug('c1Damage', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
 
-                                                        <div><div className="flex justify-between"><span>Stun Frames</span><span className="text-yellow-500">{debugValues.c1Stun}</span></div>
+                                                        <div><div className="flex justify-between"><span>Hit Stop Frames</span><span className="text-yellow-500">{debugValues.c1Stun}</span></div>
                                                         <input type="range" min="0" max="20" step="1" value={debugValues.c1Stun} onChange={(e) => updateDebug('c1Stun', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
 
                                                         <div><div className="flex justify-between"><span>Interrupt Action</span><span className="text-yellow-500">{debugValues.c1Interrupt}</span></div>
@@ -2461,7 +2466,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                                                         <div><div className="flex justify-between"><span>Damage</span><span className="text-yellow-500">{debugValues.c2Damage}</span></div>
                                                         <input type="range" min="5" max="50" step="1" value={debugValues.c2Damage} onChange={(e) => updateDebug('c2Damage', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
 
-                                                        <div><div className="flex justify-between"><span>Stun Frames</span><span className="text-yellow-500">{debugValues.c2Stun}</span></div>
+                                                        <div><div className="flex justify-between"><span>Hit Stop Frames</span><span className="text-yellow-500">{debugValues.c2Stun}</span></div>
                                                         <input type="range" min="0" max="20" step="1" value={debugValues.c2Stun} onChange={(e) => updateDebug('c2Stun', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
 
                                                         <div><div className="flex justify-between"><span>Interrupt Action</span><span className="text-yellow-500">{debugValues.c2Interrupt}</span></div>
@@ -2534,7 +2539,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                                                         <div><div className="flex justify-between"><span>Total Dmg</span><span className="text-yellow-500">{debugValues.c3TotalDamage}</span></div>
                                                         <input type="range" min="10" max="100" step="5" value={debugValues.c3TotalDamage} onChange={(e) => updateDebug('c3TotalDamage', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
 
-                                                        <div><div className="flex justify-between"><span>Stun Frames</span><span className="text-yellow-500">{debugValues.c3Stun}</span></div>
+                                                        <div><div className="flex justify-between"><span>Hit Stop Frames</span><span className="text-yellow-500">{debugValues.c3Stun}</span></div>
                                                         <input type="range" min="0" max="20" step="1" value={debugValues.c3Stun} onChange={(e) => updateDebug('c3Stun', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
 
                                                         <div><div className="flex justify-between"><span>Interrupt Action</span><span className="text-yellow-500">{debugValues.c3Interrupt}</span></div>
@@ -2592,7 +2597,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                                                         <div><div className="flex justify-between"><span>Knockback Force</span><span className="text-yellow-500">{debugValues.c4Knockback}</span></div>
                                                         <input type="range" min="0" max="20" step="1" value={debugValues.c4Knockback} onChange={(e) => updateDebug('c4Knockback', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
 
-                                                        <div><div className="flex justify-between"><span>Stun Duration</span><span className="text-yellow-500">{debugValues.c4Stun}</span></div>
+                                                        <div><div className="flex justify-between"><span>Hit Stop Frames</span><span className="text-yellow-500">{debugValues.c4Stun}</span></div>
                                                         <input type="range" min="0" max="30" step="1" value={debugValues.c4Stun} onChange={(e) => updateDebug('c4Stun', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
 
                                                         <div><div className="flex justify-between"><span>Target Shake</span><span className="text-yellow-500">{debugValues.c4Shake}</span></div>
@@ -2644,7 +2649,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                                                         <div><div className="flex justify-between"><span>Knockback Force</span><span className="text-yellow-500">{debugValues.heavyKnockback}</span></div>
                                                         <input type="range" min="0" max="30" step="1" value={debugValues.heavyKnockback} onChange={(e) => updateDebug('heavyKnockback', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
 
-                                                        <div><div className="flex justify-between"><span>Stun Duration</span><span className="text-yellow-500">{debugValues.heavyStun}</span></div>
+                                                        <div><div className="flex justify-between"><span>Hit Stop Frames</span><span className="text-yellow-500">{debugValues.heavyStun}</span></div>
                                                         <input type="range" min="0" max="60" step="1" value={debugValues.heavyStun} onChange={(e) => updateDebug('heavyStun', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
 
                                                         <div><div className="flex justify-between"><span>Target Shake</span><span className="text-yellow-500">{debugValues.heavyShake}</span></div>
