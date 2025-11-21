@@ -1,5 +1,5 @@
 
-import React, { useRef, useEffect, useCallback } from 'react';
+import React, { useRef, useEffect, useCallback, useState } from 'react';
 import { GameState, Entity, Particle } from '../types';
 
 // --- Game Constants ---
@@ -13,7 +13,7 @@ const GROUND_Y = 400;
 const ATTACK_RANGE = 90;
 const ATTACK_DAMAGE = 12; 
 const COMBO_2_DAMAGE = 18;
-const COMBO_3_DAMAGE = 14; // Adjusted for 3 hits (Total ~42 dmg)
+// COMBO 3 DAMAGE is now dynamic based on debug params
 const COMBO_4_SLAM_DAMAGE = 45; // Main slam damage
 const HEAVY_ATTACK_DAMAGE = 60;
 const HEAVY_ATTACK_RANGE = 300; 
@@ -36,6 +36,29 @@ const LOGICAL_HEIGHT = 450;
 const CANVAS_WIDTH = 480;
 const CANVAS_HEIGHT = 270;
 const SCALE_FACTOR = CANVAS_WIDTH / LOGICAL_WIDTH; // 0.6
+
+// --- Math Helpers (Hoisted for shared usage between Update and Draw) ---
+const lerp = (start: number, end: number, t: number) => start * (1 - t) + end * t;
+const easeOutQuad = (t: number) => t * (2 - t);
+const easeInOutQuad = (t: number) => t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
+const easeInCubic = (t: number) => t * t * t;
+
+// Combo 4 Configuration
+const C4_START_ANGLE = -2.5;
+const C4_END_ANGLE = 1.8;
+const C4_STAFF_LENGTH = 150;
+
+// Shared logic to get current staff angle based on Continuous Time (t)
+// t = animFrame + (animTimer / speed)
+const getCombo4AngleFromT = (t: number) => {
+    // Active swing is frames 5 to 10
+    if (t <= 5) return C4_START_ANGLE; // Windup
+    if (t >= 10) return C4_END_ANGLE; // End
+    
+    const progress = (t - 5) / 5; // 0.0 to 1.0
+    const ease = easeInCubic(progress); // Accelerate downwards
+    return lerp(C4_START_ANGLE, C4_END_ANGLE, ease);
+};
 
 interface GameCanvasProps {
   gameState: GameState;
@@ -68,6 +91,54 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
   const schedulerTimerRef = useRef<number>(0);
   const currentTickRef = useRef<number>(0);
 
+  // --- DEBUG PARAMS ---
+  const debugParamsRef = useRef({
+      // Attack 4 (Fan) & Trails
+      trailDecay: 0.2,
+      trailStep: 0.2,
+      fanFade: 0.2,
+      fanBrightness: 1.0, 
+      fanOpacity: 0.1,    
+      
+      // Attack 3 (Spin Cross) Visuals
+      c3Radius: 100,      
+      c3Width: 12,        
+      c3Glow: 1.5,        
+      c3Density: 0.4,     
+      c3Opacity: 0.3,     
+      
+      // Attack 3 Compensation / Blur
+      c3BlurSteps: 1,     // Updated Default: 1
+      c3BlurFade: 0.1,    // Updated Default: 0.1
+
+      // Attack 3 Background (Disc)
+      c3BgBrightness: 0.1, // Updated Default: 0.1
+      c3BgOpacity: 0,      // Updated Default: 0
+
+      // Attack 3 (Spin Cross) Logic
+      c3Rotations: 2,     
+      c3Speed: 50,        
+      c3ExtraHits: 10,    
+      c3TotalDamage: 45,  
+      c3Stun: 3,          
+
+      bossBehavior: 'normal', 
+      infiniteHealth: false,
+      infinitePlayerHealth: false
+  });
+  const [showDebug, setShowDebug] = useState(false);
+  const [debugValues, setDebugValues] = useState(debugParamsRef.current);
+
+  // Debug UI State
+  const [debugTab, setDebugTab] = useState<'general' | 'skills'>('general');
+  const [selectedEntity, setSelectedEntity] = useState<'player' | 'boss'>('player');
+  const [selectedSkill, setSelectedSkill] = useState<string>('atk3');
+
+  const updateDebug = (key: keyof typeof debugParamsRef.current, val: any) => {
+      debugParamsRef.current = { ...debugParamsRef.current, [key]: val };
+      setDebugValues({...debugParamsRef.current});
+  };
+
   // Mutable Game State
   const playerRef = useRef<Entity>({
     id: 'player',
@@ -98,6 +169,15 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
   const bossRef = useRef<Entity | null>(null);
   const particlesRef = useRef<Particle[]>([]);
+  
+  // NEW: Store real-time trails for Combo 4
+  const combo4TrailsRef = useRef<{ angle: number; life: number }[]>([]);
+  // Track TIME instead of angle for accurate physics-based interpolation
+  const prevCombo4TimeRef = useRef<number | null>(null);
+  
+  // TRACKER for Combo 3 multi-hits
+  const c3HitsRef = useRef<number>(0);
+
   const keysRef = useRef<{ [key: string]: boolean }>({});
   const cameraXRef = useRef(0);
   const shakeRef = useRef(0);
@@ -191,7 +271,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     currentTickRef.current = 0;
 
     // "The Primal" - FFXIV Style Rock Boss Theme
-    // Tempo: 170 BPM (Very fast, driving)
     const TEMPO = 170;
     const SEC_PER_BEAT = 60 / TEMPO;
     const SIXTEENTH = SEC_PER_BEAT / 4;
@@ -202,18 +281,13 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     const D4=293.66, E4=329.63, Fs4=369.99, G4=392.00, A4=440.00, B4=493.88;
     const D5=587.33, E5=659.25;
 
-    // Driving Rock Bass (Sawtooth) - 16 note loop
     const bassLine = [
         E2, E2, E2, G2, E2, E2, A2, B2,  E2, E2, E2, G2, E2, D3, B2, A2
     ];
 
-    // Soaring Melody (Square w/ Vibrato simulation via pitch bends later?)
-    // 32-step phrase
     const melodyLine = [
-        // Phrase 1
         E4, 0, B3, 0, G3, 0, E3, 0,  E4, 0, D4, 0, B3, 0, A3, G3, 
         A3, 0, B3, 0, D4, 0, E4, 0,  G4, 0, Fs4, 0, D4, 0, B3, 0,
-        // Phrase 2 (High)
         E5, 0, 0, 0, B4, 0, 0, 0,    G4, 0, A4, 0, B4, 0, D5, 0,
         E5, 0, D5, 0, B4, 0, A4, 0,  G4, 0, E4, 0, 0, 0, 0, 0
     ];
@@ -225,40 +299,29 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
              const t = nextNoteTimeRef.current;
              const tick = currentTickRef.current;
              
-             // 1. Drums (Rock Beat: Kick on 1, 2&, 3. Snare on 2, 4)
              const beatStep = tick % 16;
-             // Kick: 0, 4, 7, 10
              if (beatStep === 0 || beatStep === 4 || beatStep === 7 || beatStep === 10) {
                  playOscillator(ctx, 60, t, 0.1, 'triangle', 0.4, 'perc');
              }
-             // Snare: 4, 12 (Backbeat)
              if (beatStep === 4 || beatStep === 12) {
                  playNoise(ctx, t, 0.08, 0.15);
              }
-             // Hi-hat (every 2)
              if (tick % 2 === 0) {
                  playNoise(ctx, t, 0.01, 0.05);
              }
 
-             // 2. Bass (Driving Sawtooth)
              const bassNote = bassLine[tick % 16];
              if (bassNote) {
                  playOscillator(ctx, bassNote, t, SIXTEENTH * 0.8, 'sawtooth', 0.15, 'pluck');
              }
 
-             // 3. Melody (Lead Square)
-             // Melody array is 32 steps long
              const melodyNote = melodyLine[tick % 32];
              if (melodyNote > 0) {
-                 // Add simple vibrato effect by detuning slightly?
-                 // For 8-bit, just a clean square wave is clearer.
-                 // Longer duration for 'pad' like feel on long notes?
                  const isLong = (melodyLine[(tick + 1) % 32] === 0);
                  const dur = isLong ? SIXTEENTH * 2 : SIXTEENTH * 0.9;
                  playOscillator(ctx, melodyNote, t, dur, 'square', 0.08, isLong ? 'pad' : 'pluck');
              }
 
-             // 4. Arp (Magical run) - Every 3rd tick to create polyrhythm feel
              if (tick % 3 === 0) {
                  const arpNotes = [E4, G4, B4, E5];
                  const an = arpNotes[(tick/3) % 4];
@@ -284,8 +347,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         audioCtxRef.current.resume();
     }
     if (gameState === GameState.PLAYING && !bgmRunningRef.current) {
-        // Temporarily disabled BGM
-        // startBGM();
+        // startBGM(); // Disabled
     }
   }, [gameState, startBGM]);
 
@@ -295,19 +357,9 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       }
   }, [gameState, stopBGM]);
 
-  // --- SFX System (FFXIV Style) ---
+  // --- SFX System ---
   const playSound = useCallback((
-      type: 
-        | 'jump' 
-        | 'dash' 
-        | 'attack_light' 
-        | 'attack_heavy' 
-        | 'hit' 
-        | 'block' 
-        | 'charge' 
-        | 'spell' 
-        | 'hit_heavy'
-        | 'break_spell'
+      type: 'jump' | 'dash' | 'attack_light' | 'attack_heavy' | 'hit' | 'block' | 'charge' | 'spell' | 'hit_heavy' | 'break_spell'
   ) => {
       if (!audioCtxRef.current) return;
       const ctx = audioCtxRef.current;
@@ -320,10 +372,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
       switch (type) {
           case 'jump':
-              // "Dragoon Jump" - Airy Whoosh + High Chime
-              // Noise part
               playNoise(ctx, t, 0.2, 0.1);
-              // Tone part
               osc.type = 'sine';
               osc.frequency.setValueAtTime(200, t);
               osc.frequency.linearRampToValueAtTime(800, t + 0.2);
@@ -332,9 +381,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
               osc.start(t);
               osc.stop(t + 0.3);
               break;
-
           case 'dash':
-              // "Aetherial Shift" - Sharp White Noise Sweep
               const dBuf = ctx.createBuffer(1, ctx.sampleRate * 0.2, ctx.sampleRate);
               const dd = dBuf.getChannelData(0);
               for(let i=0; i<dBuf.length; i++) dd[i] = (Math.random() * 2 - 1);
@@ -351,10 +398,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
               gain.gain.linearRampToValueAtTime(0, t + 0.15);
               dSrc.start(t);
               break;
-
           case 'attack_light':
-              // "Weapon Skill" - Sharp Metal + Magic tint
-              // Pulse wave swipe
               osc.type = 'square'; 
               osc.frequency.setValueAtTime(880, t);
               osc.frequency.exponentialRampToValueAtTime(110, t + 0.1);
@@ -363,9 +407,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
               osc.start(t);
               osc.stop(t + 0.15);
               break;
-
            case 'attack_heavy':
-              // "Limit Break Start" - Heavy Sawtooth Growl
               osc.type = 'sawtooth';
               osc.frequency.setValueAtTime(220, t);
               osc.frequency.linearRampToValueAtTime(55, t + 0.3);
@@ -374,10 +416,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
               osc.start(t);
               osc.stop(t + 0.35);
               break;
-
           case 'hit':
-              // "Crystal Shatter" - Critical Hit Sound
-              // Impact
               osc.type = 'triangle';
               osc.frequency.setValueAtTime(150, t);
               osc.frequency.exponentialRampToValueAtTime(40, t + 0.1);
@@ -385,8 +424,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
               gain.gain.exponentialRampToValueAtTime(0.01, t + 0.15);
               osc.start(t);
               osc.stop(t + 0.2);
-
-              // Shatter (High Sine FM)
               const sOsc = ctx.createOscillator();
               const sGain = ctx.createGain();
               sOsc.type = 'sine';
@@ -399,10 +436,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
               sOsc.start(t);
               sOsc.stop(t + 0.15);
               break;
-
           case 'hit_heavy':
-               // Massive Impact (Heavy Attack)
-               // 1. Low Thud (Kick-like)
                osc.type = 'triangle';
                osc.frequency.setValueAtTime(100, t);
                osc.frequency.exponentialRampToValueAtTime(20, t + 0.4);
@@ -410,8 +444,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                gain.gain.exponentialRampToValueAtTime(0.01, t + 0.4);
                osc.start(t);
                osc.stop(t + 0.5);
-
-               // 2. Bass-heavy Noise Burst
                const nBuf = ctx.createBuffer(1, ctx.sampleRate * 0.4, ctx.sampleRate);
                const nd = nBuf.getChannelData(0);
                for(let i=0; i<nBuf.length; i++) nd[i] = (Math.random() * 2 - 1);
@@ -421,113 +453,84 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                nFilt.type = 'lowpass';
                nFilt.frequency.setValueAtTime(300, t);
                nFilt.frequency.linearRampToValueAtTime(100, t + 0.3);
-               nSrc.connect(nFilt);
-               nFilt.connect(gain); // Shared gain, or direct? Use new gain for control
-               // Creating new gain for noise part to allow independent volume
                const nGain = ctx.createGain();
-               nFilt.disconnect();
+               nSrc.connect(nFilt);
                nFilt.connect(nGain);
                nGain.connect(ctx.destination);
                nGain.gain.setValueAtTime(0.6, t);
                nGain.gain.exponentialRampToValueAtTime(0.01, t + 0.3);
                nSrc.start(t);
                break;
-
           case 'charge':
-              // "Job Gauge Fill" - Rising chime
               osc.type = 'sine';
               osc.frequency.setValueAtTime(440, t);
-              osc.frequency.linearRampToValueAtTime(1760, t + 0.3); // 2 octaves up
-              
+              osc.frequency.linearRampToValueAtTime(1760, t + 0.3);
               const tremolo = ctx.createOscillator();
-              tremolo.frequency.value = 20; // Fast flutter
+              tremolo.frequency.value = 20;
               const tremGain = ctx.createGain();
               tremGain.gain.value = 0.5;
               tremolo.connect(tremGain);
               tremGain.connect(gain.gain);
-              
               gain.gain.setValueAtTime(0.05, t);
               gain.gain.linearRampToValueAtTime(0.1, t + 0.2);
               gain.gain.linearRampToValueAtTime(0, t + 0.3);
-              
               osc.start(t);
               osc.stop(t + 0.3);
               tremolo.start(t);
               tremolo.stop(t + 0.3);
               break;
           case 'spell':
-             // "Immobilize" - Sharp Metallic 'Ding' (Wukong Style)
              const osc1 = ctx.createOscillator();
              osc1.type = 'sine';
              osc1.frequency.setValueAtTime(2500, t); 
              osc1.frequency.exponentialRampToValueAtTime(1000, t + 0.3);
              osc1.connect(gain);
-             
              const osc2 = ctx.createOscillator();
              osc2.type = 'triangle';
-             osc2.frequency.setValueAtTime(4000, t); // Metallic tint
+             osc2.frequency.setValueAtTime(4000, t); 
              osc2.frequency.exponentialRampToValueAtTime(500, t + 0.1);
              osc2.connect(gain);
-             
              gain.gain.setValueAtTime(0.4, t);
-             gain.gain.exponentialRampToValueAtTime(0.001, t + 1.5); // Long resonant tail
-             
+             gain.gain.exponentialRampToValueAtTime(0.001, t + 1.5); 
              osc1.start(t);
              osc1.stop(t+1.5);
              osc2.start(t);
              osc2.stop(t+1.5);
              break;
-
           case 'break_spell':
-             // REVISED 2: Matching 'spell' tonality (2500/4000Hz) but shattering
-             
-             // 1. The "Snap" - Sudden pitch drop on the base tone (Matches spell base 2500Hz)
              const snapOsc = ctx.createOscillator();
              snapOsc.type = 'sine';
              snapOsc.frequency.setValueAtTime(2500, t); 
-             snapOsc.frequency.exponentialRampToValueAtTime(100, t + 0.1); // Instant snap down
-             
+             snapOsc.frequency.exponentialRampToValueAtTime(100, t + 0.1); 
              const snapG = ctx.createGain();
              snapG.gain.setValueAtTime(0.5, t);
              snapG.gain.exponentialRampToValueAtTime(0.01, t + 0.1);
-             
              snapOsc.connect(snapG);
              snapG.connect(ctx.destination);
              snapOsc.start(t);
              snapOsc.stop(t + 0.15);
-
-             // 2. The "Shards" - High metallic inharmonic ring
-             // Uses the same 4000Hz from spell but detuned for dissonance
              const shardOsc = ctx.createOscillator();
              shardOsc.type = 'triangle';
              shardOsc.frequency.setValueAtTime(4000, t); 
-             shardOsc.detune.setValueAtTime(500, t); // Discordant
-             
+             shardOsc.detune.setValueAtTime(500, t); 
              const shardG = ctx.createGain();
              shardG.gain.setValueAtTime(0.3, t);
-             shardG.gain.exponentialRampToValueAtTime(0.01, t + 0.2); // Short tail
-             
+             shardG.gain.exponentialRampToValueAtTime(0.01, t + 0.2); 
              shardOsc.connect(shardG);
              shardG.connect(ctx.destination);
              shardOsc.start(t);
              shardOsc.stop(t + 0.25);
-             
-             // 3. Glass Dust - High frequency noise (No low grit)
              const dustBuf = ctx.createBuffer(1, ctx.sampleRate * 0.1, ctx.sampleRate);
              const dustData = dustBuf.getChannelData(0);
              for(let i=0; i<dustBuf.length; i++) dustData[i] = (Math.random() * 2 - 1);
-             
              const dustSrc = ctx.createBufferSource();
              dustSrc.buffer = dustBuf;
-             
              const dustFilt = ctx.createBiquadFilter();
              dustFilt.type = 'highpass';
              dustFilt.frequency.value = 6000; 
-             
              const dustG = ctx.createGain();
              dustG.gain.setValueAtTime(0.4, t);
              dustG.gain.exponentialRampToValueAtTime(0.01, t + 0.1);
-             
              dustSrc.connect(dustFilt);
              dustFilt.connect(dustG);
              dustG.connect(ctx.destination);
@@ -567,7 +570,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       vx: 0,
       vy: 0,
       state: 'idle',
-      isDead: false, // Reset dead status to ensure gravity applies
+      isDead: false,
       animFrame: 0,
       animTimer: 0,
       attackCooldown: 0,
@@ -595,7 +598,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       facingRight: false,
       type: 'boss',
       state: 'idle',
-      attackCooldown: 60, // Start with a delay
+      attackCooldown: 60, 
       dodgeCooldown: 0,
       chargeTimer: 0,
       comboCount: 0,
@@ -609,18 +612,18 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     };
 
     particlesRef.current = [];
+    combo4TrailsRef.current = [];
+    prevCombo4TimeRef.current = null;
     cameraXRef.current = 0;
     shakeRef.current = 0;
+    c3HitsRef.current = 0;
+
     setPlayerHealth(100);
     setBossHealth(1200);
     setStamina(100);
     setScore(0);
     
-    if (audioCtxRef.current?.state === 'running') {
-        // startBGM(); // Disabled
-    }
-
-  }, [setPlayerHealth, setBossHealth, setStamina, setScore, startBGM]);
+  }, [setPlayerHealth, setBossHealth, setStamina, setScore]);
 
   useEffect(() => {
     if (gameState === GameState.PLAYING) {
@@ -646,8 +649,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
   const resolveEntityCollision = (e1: Entity, e2: Entity) => {
     if (e1.state === 'dodge' || e2.state === 'dodge') return;
     
-    // If entities are frozen in hitstop, usually skip resolution to avoid jitter.
-    // BUT, if Boss is immobilized, they should act as a solid wall regardless of hitstop state.
     const p1Frozen = e1.hitStop > 0 && !e1.isImmobilized;
     const p2Frozen = e2.hitStop > 0 && !e2.isImmobilized;
     if (p1Frozen || p2Frozen) return;
@@ -658,7 +659,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         e1.pos.y < e2.pos.y + e2.height &&
         e1.pos.y + e1.height > e2.pos.y
     ) {
-        
         const center1 = e1.pos.x + e1.width / 2;
         const center2 = e2.pos.x + e2.width / 2;
         const pushForce = 2; 
@@ -692,6 +692,12 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
     const player = playerRef.current;
     const boss = bossRef.current;
+    
+    // Debug values
+    const { 
+        trailDecay, trailStep, bossBehavior, infiniteHealth, infinitePlayerHealth,
+        c3Rotations, c3Speed, c3ExtraHits, c3TotalDamage, c3Stun, c3Radius
+    } = debugParamsRef.current;
 
     // --- 1. Player Logic ---
     if (player.hitStop > 0) {
@@ -708,65 +714,113 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
           player.comboCount = 0;
       }
 
+      // --- TRAIL SYSTEM UPDATE (REAL TIME) ---
+      // Update existing trails (Decay)
+      for (let i = combo4TrailsRef.current.length - 1; i >= 0; i--) {
+          combo4TrailsRef.current[i].life -= trailDecay; 
+          if (combo4TrailsRef.current[i].life <= 0) {
+              combo4TrailsRef.current.splice(i, 1);
+          }
+      }
+
+      // Generate new trails for Combo 4 with Time-based Supersampling
+      if (player.state === 'attack' && player.comboCount === 4) {
+          // Calculate continuous time 't'
+          const speed = 1; // Hardcoded speed for Combo 4
+          const currentT = player.animFrame + (player.animTimer / speed);
+
+          // Active swing frames: 5 to 10. 
+          // hitStop must be 0 (moving) to generate new trails.
+          if (player.animFrame >= 5 && player.animFrame <= 10 && player.hitStop <= 0) {
+               
+               if (prevCombo4TimeRef.current === null) {
+                   prevCombo4TimeRef.current = currentT;
+                   // Initial trail
+                   combo4TrailsRef.current.push({
+                       angle: getCombo4AngleFromT(currentT),
+                       life: 0.5 // Slightly lower starting life
+                   });
+               } else {
+                   const prevT = prevCombo4TimeRef.current;
+                   
+                   // If time has advanced, fill the gap
+                   if (currentT > prevT) {
+                       // Density: Generate a trail every 'step' time units
+                       let simT = prevT + trailStep;
+                       
+                       while (simT <= currentT) {
+                           const angle = getCombo4AngleFromT(simT);
+                           
+                           // Age Compensation
+                           const age = currentT - simT;
+                           const lifeStart = 0.5 - (age * trailDecay); // Adjusted to match decay
+                           
+                           if (lifeStart > 0) {
+                               combo4TrailsRef.current.push({
+                                   angle: angle,
+                                   life: lifeStart
+                               });
+                           }
+                           simT += trailStep;
+                       }
+                   }
+                   prevCombo4TimeRef.current = currentT;
+               }
+          } else {
+              // If outside swing window or frozen, reset logic if completely done
+              if (player.animFrame > 10 || player.animFrame < 5) {
+                  prevCombo4TimeRef.current = null;
+              }
+          }
+      } else {
+          prevCombo4TimeRef.current = null;
+      }
+
       const isAttackPressed = keysRef.current['KeyJ'];
-      // Removed KeyK from dodge
       const isDodgePressed = keysRef.current['ShiftLeft'] || keysRef.current['KeyL']; 
       const isSpellPressed = keysRef.current['KeyK'];
 
       // --- Spell Logic (Immobilize) ---
       if (isSpellPressed && (!player.spellCooldown || player.spellCooldown <= 0) && boss && !boss.isDead) {
            const dist = boss.pos.x - player.pos.x;
-           const range = 600; // INCREASED RANGE
-           
-           // Check facing and range
+           const range = 600; 
            const facingTarget = (player.facingRight && dist > 0) || (!player.facingRight && dist < 0);
            
            if (facingTarget && Math.abs(dist) < range) {
                boss.isImmobilized = true;
-               boss.immobilizeTimer = 300; // 5 seconds
-               boss.immobilizeDamageTaken = 0; // Reset damage tracker
-               // NOTE: Do NOT reset boss.state or velocity here. 
-               // Immobilize should pause time, not reset state.
-               
+               boss.immobilizeTimer = 300; 
+               boss.immobilizeDamageTaken = 0; 
                playSound('spell');
                
-               // Visual: Causality Thread (Player -> Boss)
-               // REVISED: Ethereal Arc with scatter
                const pCx = player.pos.x + player.width/2;
                const pCy = player.pos.y + player.height/2;
                const bCx = boss.pos.x + boss.width/2;
                const bCy = boss.pos.y + boss.height/2;
-               
-               // Control point for a slight arc (visual flair)
                const cX = (pCx + bCx) / 2;
-               const cY = (pCy + bCy) / 2 - 40; // Arc upwards slightly
+               const cY = (pCy + bCy) / 2 - 40; 
                
                const particleCount = 24;
                for(let i=0; i<=particleCount; i++) {
                    const t = i / particleCount;
-                   // Quadratic Bezier: (1-t)^2 * P0 + 2(1-t)t * P1 + t^2 * P2
                    const invT = 1 - t;
                    const lx = (invT * invT * pCx) + (2 * invT * t * cX) + (t * t * bCx);
                    const ly = (invT * invT * pCy) + (2 * invT * t * cY) + (t * t * bCy);
                    
-                   // "Ethereal" Scatter
-                   const scatter = 8; // Pixel variance
+                   const scatter = 8; 
                    const offsetX = (Math.random() - 0.5) * scatter;
                    const offsetY = (Math.random() - 0.5) * scatter;
 
                    particlesRef.current.push({
                        x: lx + offsetX,
                        y: ly + offsetY,
-                       vx: (Math.random() - 0.5) * 0.2, // Minimal horizontal drift
-                       vy: -Math.random() * 0.5, // Upward float
-                       life: 0.4 + Math.random() * 0.3, // Varied short lifespan
-                       color: Math.random() > 0.5 ? '#fbbf24' : '#fef3c7', // Gold mixed with pale yellow
-                       size: Math.random() * 2 + 0.5 // Varied small sizes
+                       vx: (Math.random() - 0.5) * 0.2, 
+                       vy: -Math.random() * 0.5, 
+                       life: 0.4 + Math.random() * 0.3, 
+                       color: Math.random() > 0.5 ? '#fbbf24' : '#fef3c7', 
+                       size: Math.random() * 2 + 0.5 
                    });
                }
-               
                createParticles(boss.pos.x + boss.width/2, boss.pos.y + boss.height/2, '#fbbf24', 30, 4);
-               // Removed long CD, set small debounce to prevent frame tearing
                player.spellCooldown = 30; 
            }
       }
@@ -840,6 +894,11 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
                        player.vx = player.facingRight ? lunge : -lunge;
                        playSound('attack_light');
+                       
+                       // Init Combo 3 tracker
+                       if (player.comboCount === 3) {
+                           c3HitsRef.current = 0;
+                       }
                    } else {
                        if ((player.comboCount === 3 || player.state === 'air_attack')) {
                             player.state = 'attack';
@@ -911,7 +970,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
          player.vx *= 0.90; 
       }
 
-      // Adjusted Jump to Space Only
       if ((keysRef.current['Space']) && onGround && !movementLocked && player.state !== 'attack') {
         player.vy = JUMP_FORCE;
         playSound('jump');
@@ -938,11 +996,19 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       const isAttacking = (player.state === 'attack' || player.state === 'heavy_attack' || player.state === 'air_attack');
       let activeFrames = false;
       
+      // --- COMBO 3 DYNAMIC LOGIC ---
+      // Calculate end frame based on degrees and speed
+      // Total Degrees = c3Rotations * 360
+      // Duration = TotalDegrees / c3Speed
+      const c3TotalFrames = Math.ceil((c3Rotations * 360) / c3Speed);
+      
       if (player.state === 'heavy_attack') activeFrames = player.animFrame >= 2 && player.animFrame <= 6; 
       else if (player.state === 'attack') {
           if (player.comboCount === 1 || player.comboCount === 2) activeFrames = player.animFrame === 1 || player.animFrame === 2;
-          // Combo 3 Active Frames adjusted for 3-hit duration (0-12)
-          else if (player.comboCount === 3) activeFrames = player.animFrame >= 0 && player.animFrame <= 12; 
+          else if (player.comboCount === 3) {
+              // Combo 3 acts active for the calculated duration
+              activeFrames = player.animFrame <= c3TotalFrames;
+          }
           else if (player.comboCount === 4) activeFrames = player.animFrame >= 5 && player.animFrame <= 10; 
       } 
       else if (player.state === 'air_attack') activeFrames = true;
@@ -951,16 +1017,31 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
           let range = ATTACK_RANGE;
           let damage = ATTACK_DAMAGE;
           let isAir = player.state === 'air_attack' || (player.state === 'attack' && player.comboCount === 3);
-          // Multi-hit applies to Air Attack AND Attack 3 (Combo Count 3)
           let isMultiHit = player.state === 'air_attack' || (player.state === 'attack' && player.comboCount === 3);
 
           if (player.state === 'heavy_attack') {
               range = HEAVY_ATTACK_RANGE;
               damage = HEAVY_ATTACK_DAMAGE;
           } else if (isAir) {
-              damage = (player.state === 'attack' && player.comboCount === 3) ? COMBO_3_DAMAGE : AIR_ATTACK_DAMAGE;
-              // Combo 3: Adjusted range to match visual spin (approx 1.5x)
-              range = (player.state === 'attack' && player.comboCount === 3) ? ATTACK_RANGE * 1.5 : ATTACK_RANGE * 1.5;
+              if (player.state === 'attack' && player.comboCount === 3) {
+                  // --- COMBO 3 PARAMETERS ---
+                  range = c3Radius; // Use debug parameter for range
+                  const totalHits = 1 + c3ExtraHits;
+                  damage = c3TotalDamage / totalHits; // Distribute damage
+
+                  // Multi-hit Reset Logic
+                  // Divide total frames into segments. At start of each segment, reset damage.
+                  const segmentLen = c3TotalFrames / totalHits;
+                  const currentHitIndex = Math.floor(player.animFrame / segmentLen);
+                  
+                  if (currentHitIndex > c3HitsRef.current) {
+                      player.hasDealtDamage = false;
+                      c3HitsRef.current = currentHitIndex;
+                  }
+              } else {
+                  damage = AIR_ATTACK_DAMAGE;
+                  range = ATTACK_RANGE * 1.5;
+              }
           } else if (player.state === 'attack') {
               if (player.comboCount === 2) { damage = COMBO_2_DAMAGE; range = ATTACK_RANGE * 1.2; }
               if (player.comboCount === 4) {
@@ -969,43 +1050,81 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
               }
           }
           
-          const pCx = player.pos.x + player.width/2;
-          const pCy = player.pos.y + player.height/2;
-          const bCx = boss.pos.x + boss.width/2;
-          const bCy = boss.pos.y + boss.height/2;
-          
           let hit = false;
-          
-          if (isAir) {
-              const dist = Math.sqrt(Math.pow(pCx - bCx, 2) + Math.pow(pCy - bCy, 2));
-              if (dist < range) hit = true;
-          } else {
-              let attackBoxX = player.facingRight ? player.pos.x + player.width : player.pos.x - range;
-              let attackBoxW = range;
-              let attackBoxY = player.pos.y;
-              let attackBoxH = player.height;
 
-              if ((player.state === 'attack' && player.comboCount === 4) || player.state === 'heavy_attack') {
-                  const slamReach = 250; 
-                  attackBoxH += slamReach;
+          // Advanced Collision for Combo 4 (Sweep Detection)
+          if (player.state === 'attack' && player.comboCount === 4) {
+               const speed = 1;
+               const currentT = player.animFrame + (player.animTimer / speed);
+               
+               // SWEEP: Check collision from previous frame to current frame
+               const prevT = Math.max(5, currentT - 1.0);
+               const sweepSteps = 6; 
+
+               const pivotX = player.pos.x + player.width/2;
+               const pivotY = player.pos.y + player.height - 35;
+               const checkPoints = [40, 80, 120, 150]; 
+               
+               for (let s = 0; s <= sweepSteps; s++) {
+                   if (hit) break; 
+                   const t = lerp(prevT, currentT, s / sweepSteps);
+                   const angle = getCombo4AngleFromT(t);
+                   for (const r of checkPoints) {
+                       const dir = player.facingRight ? 1 : -1;
+                       const px = pivotX + (Math.cos(angle) * r * dir);
+                       const py = pivotY + (Math.sin(angle) * r);
+                       if (
+                           px >= boss.pos.x && px <= boss.pos.x + boss.width &&
+                           py >= boss.pos.y && py <= boss.pos.y + boss.height
+                       ) {
+                           hit = true;
+                           if (!player.hasDealtDamage) { 
+                                createParticles(px, py, '#fff', 2, 5);
+                           }
+                           break;
+                       }
+                   }
+               }
+          } 
+          else {
+              const pCx = player.pos.x + player.width/2;
+              const pCy = player.pos.y + player.height/2;
+              const bCx = boss.pos.x + boss.width/2;
+              const bCy = boss.pos.y + boss.height/2;
+
+              if (isAir) {
+                  // Update collision for Combo 3: Include Boss Dimensions
+                  const dist = Math.sqrt(Math.pow(pCx - bCx, 2) + Math.pow(pCy - bCy, 2));
+                  const effectiveRange = range + (Math.min(boss.width, boss.height) / 2);
                   
-                  const backBuffer = 40; 
-                  if (player.facingRight) {
-                      attackBoxX = player.pos.x - backBuffer;
-                      attackBoxW = range + player.width + backBuffer;
-                  } else {
-                      attackBoxX = player.pos.x - range;
-                      attackBoxW = range + player.width + backBuffer;
-                  }
-              }
+                  if (dist < effectiveRange) hit = true;
+              } else {
+                  let attackBoxX = player.facingRight ? player.pos.x + player.width : player.pos.x - range;
+                  let attackBoxW = range;
+                  let attackBoxY = player.pos.y;
+                  let attackBoxH = player.height;
 
-              if (
-                attackBoxX < boss.pos.x + boss.width &&
-                attackBoxX + attackBoxW > boss.pos.x &&
-                attackBoxY < boss.pos.y + boss.height &&
-                attackBoxY + attackBoxH > boss.pos.y
-              ) {
-                  hit = true;
+                  if (player.state === 'heavy_attack') {
+                      const slamReach = 250; 
+                      attackBoxH += slamReach;
+                      const backBuffer = 40; 
+                      if (player.facingRight) {
+                          attackBoxX = player.pos.x - backBuffer;
+                          attackBoxW = range + player.width + backBuffer;
+                      } else {
+                          attackBoxX = player.pos.x - range;
+                          attackBoxW = range + player.width + backBuffer;
+                      }
+                  }
+
+                  if (
+                    attackBoxX < boss.pos.x + boss.width &&
+                    attackBoxX + attackBoxW > boss.pos.x &&
+                    attackBoxY < boss.pos.y + boss.height &&
+                    attackBoxY + attackBoxH > boss.pos.y
+                  ) {
+                      hit = true;
+                  }
               }
           }
 
@@ -1016,7 +1135,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
               let shouldRegisterHit = false;
               if (isMultiHit) {
-                   if (player.attackCooldown <= 0) {
+                   if (!player.hasDealtDamage) {
                        shouldRegisterHit = true;
                    }
               } else {
@@ -1026,27 +1145,28 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
               }
 
               if (shouldRegisterHit) { 
-                 boss.health -= damage;
+                 // INFINITE HEALTH LOGIC (INTERCEPT BEFORE APPLYING DAMAGE)
+                 if (infiniteHealth && boss.health - damage <= 0) {
+                     boss.health = boss.maxHealth; 
+                     // Do not apply damage that kills
+                 } else {
+                     boss.health -= damage;
+                 }
+
                  const isHeavyHit = player.state === 'heavy_attack' || player.comboCount === 4;
 
-                 // Immobilized Boss Logic on Hit
                  if (boss.isImmobilized) {
-                    // Accumulate damage to break spell
                     boss.immobilizeDamageTaken = (boss.immobilizeDamageTaken || 0) + damage;
 
                     if (boss.immobilizeDamageTaken > IMMOBILIZE_BREAK_THRESHOLD) {
-                        // BREAK!
                         boss.isImmobilized = false;
                         boss.immobilizeDamageTaken = 0;
                         boss.immobilizeTimer = 0;
 
-                        // 1. Visuals & Sound
-                        playSound('break_spell'); // High pitch shatter
-                        shakeRef.current = 25; // Heavy Shake (Guaranteed and Increased)
+                        playSound('break_spell'); 
+                        shakeRef.current = 25; 
                         
-                        // 2. Particles (Explosion of Gold & Glass)
                         for(let i=0; i<25; i++) {
-                            // Gold Shards
                             particlesRef.current.push({
                                 x: boss.pos.x + boss.width/2,
                                 y: boss.pos.y + boss.height/2,
@@ -1056,80 +1176,67 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                                 color: '#fbbf24',
                                 size: Math.random() * 4 + 3
                             });
-                            // White Glass Shards
-                            particlesRef.current.push({
-                                x: boss.pos.x + boss.width/2,
-                                y: boss.pos.y + boss.height/2,
-                                vx: (Math.random() - 0.5) * 15,
-                                vy: (Math.random() - 0.5) * 15,
-                                life: 1.0,
-                                color: '#ffffff',
-                                size: Math.random() * 3 + 2
-                            });
                         }
 
-                        // 3. Recoil/Hit State Force
                         boss.state = 'hit';
                         boss.animFrame = 0;
-                        boss.vx = player.facingRight ? 8 : -8; // Knockback applied on break
+                        boss.vx = player.facingRight ? 8 : -8; 
 
-                        // 4. Hit Stop Calculation
                         let stopDuration = 10;
                         if (isHeavyHit) stopDuration = 15;
                         else if (isMultiHit) stopDuration = 8;
                         
-                        // NEW: Ensure minimum hitstop for break is at least 18 frames
                         const finalStun = Math.max(stopDuration, 18);
-
                         player.hitStop = finalStun;
                         boss.hitStop = finalStun;
 
                     } else {
-                        // Hit while frozen, but didn't break
                         playSound(isHeavyHit ? 'hit_heavy' : 'hit');
                         shakeRef.current = 5;
                         createParticles(boss.pos.x + boss.width/2, boss.pos.y + boss.height/2, '#fbbf24', 8, 5);
                         
-                        // Small hitstop to feel the impact on the frozen body
                         player.hitStop = 3;
                         boss.hitStop = 3;
                     }
                  } else {
-                     // Normal Hit Logic
-                     // REVISED KNOCKBACK: Only Combo 4 (Finisher) and Heavy Attack deal knockback.
                      let kForce = 0; 
-                     if (player.comboCount === 4) kForce = 8; // Reduced from 15 to 8 (Medium push)
-                     if (player.state === 'heavy_attack') kForce = 12; // Reduced from 25 to 12 (Hard push)
+                     if (player.comboCount === 4) kForce = 8; 
+                     if (player.state === 'heavy_attack') kForce = 12; 
                      
                      boss.vx = player.facingRight ? kForce : -kForce;
-                     boss.state = 'hit';
-                     boss.animTimer = 0;
                      
                      let stopDuration = 10; 
                      let shakeInt = 5;
 
-                     if (player.state === 'heavy_attack' || player.comboCount === 4) {
+                     const shouldStagger = player.state === 'heavy_attack' || player.comboCount === 4;
+
+                     if (player.state === 'heavy_attack') {
                          stopDuration = 15; 
                          shakeInt = 20;
                          createParticles(boss.pos.x + boss.width/2, boss.pos.y + boss.height, '#fff', 20, 15);
+                     } else if (player.comboCount === 4) {
+                         stopDuration = 12;
+                         shakeInt = 20;
+                         createParticles(boss.pos.x + boss.width/2, boss.pos.y + boss.height, '#fff', 20, 15);
                      } else if (isMultiHit) {
-                         // Multi-Hit Logic (Air or Combo 3)
                          if (player.comboCount === 3) {
-                             // Combo 3 Spin: Snappy but visible hits
-                             stopDuration = 8; // Increased from 6 to 8 for better weight
-                             shakeInt = 2; // Added slight shake
+                             stopDuration = c3Stun; // Use debug param for stun
+                             shakeInt = 2; 
                          } else {
-                             // Air Attack: Keep original feel
                              stopDuration = 8; 
                              shakeInt = 5;
                          }
                      } else if (player.comboCount === 1 || player.comboCount === 2) {
-                         // Increased hitstop for light attacks to improve feel
                          stopDuration = 4; 
                      }
 
+                     // Apply Stagger if configured
+                     if (shouldStagger) {
+                         boss.state = 'hit';
+                         boss.animTimer = 0;
+                     }
+
                      player.hitStop = stopDuration; 
-                     // Sync boss hitstop
                      boss.hitStop = stopDuration;
 
                      shakeRef.current = shakeInt; 
@@ -1145,17 +1252,14 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                  
                  if (isMultiHit) {
                      if (player.comboCount === 3) {
-                         // HIT FREQUENCY LOGIC FOR 3 HITS in 12 frames (1 turn):
-                         // Hits at frames 0, 6, 12 (every 6 frames)
-                         // Cooldown 11 ticks (since update speed 1 = 2 ticks/frame -> 6 frames = 12 ticks)
                          player.attackCooldown = 11;
                      } else {
-                         // Standard Air Attack cooldown
                          player.attackCooldown = 18; 
                      }
+                     player.hasDealtDamage = true; // Set flag to wait for next reset cycle
                  } else {
                      player.hasDealtDamage = true;
-                 }
+                  }
               }
           }
       }
@@ -1189,8 +1293,9 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       }
       
       if (player.state === 'air_attack' || (player.state === 'attack' && player.comboCount === 3)) {
-           // Combo 3 duration set to 12 to ensure 3-hit sequence fits naturally (1 rotation)
-           const limit = player.comboCount === 3 ? 12 : 18; 
+           // DYNAMIC LIMIT for Combo 3
+           const limit = player.comboCount === 3 ? c3TotalFrames : 18; 
+           
            if (player.animFrame > limit) { 
                if (player.comboCount === 3) {
                    player.state = 'attack';
@@ -1216,9 +1321,9 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       let animSpeed = 8;
       if (player.state === 'run') animSpeed = 5;
       if (player.state === 'attack') {
-          if (player.comboCount === 3) animSpeed = 1; // Fastest spin (2 ticks per frame)
+          if (player.comboCount === 3) animSpeed = 1; 
           else if (player.comboCount === 4) animSpeed = 1; 
-          else animSpeed = 3; // Faster light attack
+          else animSpeed = 3; 
       }
       if (player.state === 'heavy_attack') animSpeed = 2; 
       if (player.state === 'dodge') animSpeed = 3;
@@ -1237,30 +1342,43 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
     // --- 2. Boss Logic ---
     if (boss && !boss.isDead) {
-      // Allow hitStop to decrement even if immobilized, ensuring collision flags clear
       if (boss.hitStop > 0) boss.hitStop--;
 
+      // Only apply AI Decision overrides if not reacting to damage
+      const isReacting = boss.state === 'hit' || boss.hitStop > 0 || boss.isImmobilized;
+      
+      if (!isReacting) {
+          // Debug Behavior Override
+          if (bossBehavior === 'idle') {
+              if (boss.state !== 'idle') {
+                   boss.state = 'idle';
+                   boss.vx = 0;
+              }
+              boss.attackCooldown = 60;
+          } 
+          else if (bossBehavior === 'kowtow') {
+              // Force kowtow loop
+              if (boss.state !== 'kowtow_attack') {
+                  boss.state = 'kowtow_attack';
+                  boss.animFrame = 0;
+                  boss.animTimer = 0;
+                  boss.vx = 0;
+              }
+          }
+      }
+
       if (boss.isImmobilized) {
-          // FROZEN STATE (Immobilize)
-          // Timer Tick Down
           if (boss.immobilizeTimer && boss.immobilizeTimer > 0) {
              boss.immobilizeTimer--;
-             
-             // Golden Particles emission
              const flickerRate = 10;
              if (boss.immobilizeTimer % flickerRate === 0) {
                  createParticles(boss.pos.x + Math.random()*boss.width, boss.pos.y + Math.random()*boss.height, '#fbbf24', 1, 1);
              }
           } else {
-             // Time expired naturally
              boss.isImmobilized = false;
           }
       } else {
-        // NORMAL STATE (Physics & Logic Active)
-        
-        // If not in hitstop (visual freeze), run AI
         if (boss.hitStop <= 0) {
-            // FIX: Prevent turning during kowtow attack
             if (boss.state !== 'kowtow_attack') {
                 boss.facingRight = player.pos.x > boss.pos.x;
             }
@@ -1268,59 +1386,50 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
             const distance = Math.abs(player.pos.x - boss.pos.x);
             const PREFERRED_DISTANCE = 220;
             
-            // --- DEBUG: FORCE KOWTOW ATTACK ---
-            // If not busy with another high-priority state, check cooldown and force kowtow.
-            const isBusy = ['attack', 'jump_smash', 'hit', 'kowtow_attack'].includes(boss.state);
-            if (!isBusy) {
-                 if (boss.attackCooldown <= 0) {
-                      boss.state = 'kowtow_attack';
-                      boss.animFrame = 0;
-                      boss.animTimer = 0;
-                      boss.vx = 0; // Stop movement for the attack
-                 }
+            // Normal AI logic only if not forced to idle/kowtow loop via debug
+            if (bossBehavior === 'normal') {
+                const isBusy = ['attack', 'jump_smash', 'hit', 'kowtow_attack'].includes(boss.state);
+                if (!isBusy) {
+                    if (boss.attackCooldown <= 0) {
+                        boss.state = 'kowtow_attack';
+                        boss.animFrame = 0;
+                        boss.animTimer = 0;
+                        boss.vx = 0; 
+                    }
+                }
             }
 
             if (boss.state === 'kowtow_attack') {
-                // KOWTOW ATTACK LOGIC
-                // Frames 0-3: Windup (Lean back)
-                // Frame 4: Slam Impact
-                // Frames 5-12: Recovery (Head stuck/Get up)
-                
+                // Friction to stop sliding if knocked back
+                if (Math.abs(boss.vx) > 0.1) boss.vx *= 0.8;
+                else boss.vx = 0;
+
                 const IMPACT_FRAME = 4;
                 
                 if (boss.animFrame === IMPACT_FRAME && boss.animTimer === 0) { 
-                     // Trigger ONCE when entering frame 4
                      playSound('hit_heavy');
                      shakeRef.current = 15;
                      
-                     // Visuals: Shockwave
-                     // Calculate head position based on facing
                      const headX = boss.facingRight ? boss.pos.x + boss.width + 40 : boss.pos.x - 40;
                      const headY = GROUND_Y;
                      
-                     // Central puff
-                     createParticles(headX, headY, '#a855f7', 8, 12); // Purple impact core
-                     createParticles(headX, headY, '#ffffff', 8, 8); // Dust core
+                     createParticles(headX, headY, '#a855f7', 8, 12); 
+                     createParticles(headX, headY, '#ffffff', 8, 8); 
                      
-                     // New Visuals: Shockwave Hint (Low Presence, Range Diffusion)
-                     // Calculate speed to reach 150px in approx 20 frames (particle life)
                      const shockwaveRange = 150;
                      const particleLifeFrames = 20;
                      const swSpeed = shockwaveRange / particleLifeFrames; 
                      
-                     // ENHANCED PARTICLE LOOP
-                     for(let i=0; i<12; i++) { // Increased from 8
-                         // Right Wave
+                     for(let i=0; i<12; i++) { 
                          particlesRef.current.push({
                              x: headX, 
                              y: headY - 2,
-                             vx: swSpeed * (0.8 + Math.random() * 0.4), // Varied speed for spread
-                             vy: (Math.random() - 0.5) * 2 - 1, // Slight kick up
+                             vx: swSpeed * (0.8 + Math.random() * 0.4), 
+                             vy: (Math.random() - 0.5) * 2 - 1, 
                              life: 1.0,
-                             color: i % 2 === 0 ? 'rgba(120, 113, 108, 0.8)' : 'rgba(168, 162, 158, 0.5)', // Darker stone vs Light dust
-                             size: 2 + Math.random() * 4 // Larger variance
+                             color: i % 2 === 0 ? 'rgba(120, 113, 108, 0.8)' : 'rgba(168, 162, 158, 0.5)', 
+                             size: 2 + Math.random() * 4 
                          });
-                         // Left Wave
                          particlesRef.current.push({
                              x: headX, 
                              y: headY - 2,
@@ -1332,18 +1441,22 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                          });
                      }
                      
-                     // Hit Detection (AOE)
-                     const range = shockwaveRange; // Match visual
+                     const range = shockwaveRange; 
                      const dist = Math.abs((player.pos.x + player.width/2) - headX);
                      const vertDist = Math.abs((player.pos.y + player.height) - headY);
                      
-                     // Must be on ground or close to it, and within range
                      if (dist < range && vertDist < 40 && player.state !== 'dodge') {
-                          player.health -= BOSS_KOWTOW_DAMAGE;
+                          // INFINITE PLAYER HEALTH LOGIC (INTERCEPT BEFORE DAMAGE)
+                          if (infinitePlayerHealth && player.health - BOSS_KOWTOW_DAMAGE <= 0) {
+                              player.health = player.maxHealth;
+                          } else {
+                              player.health -= BOSS_KOWTOW_DAMAGE;
+                          }
+
                           player.state = 'hit';
                           player.hitStop = 15;
-                          player.vy = -10; // Pop up
-                          player.vx = boss.facingRight ? 8 : -8; // Knockback
+                          player.vy = -10; 
+                          player.vx = boss.facingRight ? 8 : -8; 
                           setPlayerHealth(player.health);
                           createParticles(player.pos.x, player.pos.y, '#ef4444', 8);
                           if (player.health <= 0) {
@@ -1356,68 +1469,79 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                 if (boss.animFrame > 12) {
                     boss.state = 'idle';
                     boss.animFrame = 0;
-                    boss.attackCooldown = 60; // Wait 1 second before next attack (Debug purpose)
+                    boss.attackCooldown = 60; 
+                    if (bossBehavior === 'kowtow') boss.attackCooldown = 0; // Reset instantly for loop
                 }
             }
             else if (boss.state !== 'hit') {
-                // Standard AI (Lower priority than debug loop above, so kowtow will likely override)
-                // Keeping basic movement logic so boss doesn't freeze between kowtows
-                
-                if (boss.state === 'run' && distance < 250 && distance > 100 && Math.random() < 0.02 && boss.attackCooldown <= 0) {
-                    // Suppressed by debug logic mostly, but harmless to keep
-                    boss.state = 'jump_smash'; 
-                    boss.vy = -15; 
-                    boss.vx = boss.facingRight ? 8 : -8;
-                    boss.attackCooldown = 150;
-                }
-                else if (boss.state === 'run') {
-                    if (distance < 350 && distance > 200 && Math.random() < 0.05) {
-                        boss.state = 'standoff';
-                        boss.animTimer = 0;
+                // Only allow these state transitions if behavior is normal
+                if (bossBehavior === 'normal') {
+                    if (boss.state === 'run' && distance < 250 && distance > 100 && Math.random() < 0.02 && boss.attackCooldown <= 0) {
+                        boss.state = 'jump_smash'; 
+                        boss.vy = -15; 
+                        boss.vx = boss.facingRight ? 8 : -8;
+                        boss.attackCooldown = 150;
                     }
-                    if (distance < PREFERRED_DISTANCE) {
-                        boss.state = 'standoff';
-                    }
-                }
-
-                if (boss.state === 'jump_smash') {
-                    if (boss.pos.y + boss.height >= GROUND_Y) {
-                        boss.state = 'attack'; 
-                        shakeRef.current = 10;
-                        createParticles(boss.pos.x + boss.width/2, GROUND_Y, '#581c87', 10);
-                        if (distance < 150 && player.pos.y + player.height >= GROUND_Y - 20 && player.state !== 'dodge') {
-                            player.health -= BOSS_DAMAGE * 1.5;
-                            player.vx = boss.facingRight ? 15 : -15;
-                            player.vy = -5;
-                            player.state = 'hit';
-                            player.hitStop = 12; 
-                            boss.hitStop = 8; 
-                            setPlayerHealth(player.health);
+                    else if (boss.state === 'run') {
+                        if (distance < 350 && distance > 200 && Math.random() < 0.05) {
+                            boss.state = 'standoff';
+                            boss.animTimer = 0;
                         }
-                        setTimeout(() => { if(boss.state === 'attack') boss.state = 'idle'; }, 500);
+                        if (distance < PREFERRED_DISTANCE) {
+                            boss.state = 'standoff';
+                        }
                     }
-                }
-                else if (boss.state === 'standoff') {
-                    const diff = distance - PREFERRED_DISTANCE;
-                    const tolerance = 30; 
-                    if (diff < -tolerance) {
-                        boss.vx = boss.facingRight ? -1.5 : 1.5;
-                        boss.state = 'run'; 
-                    } else if (diff > tolerance) {
-                        boss.vx = boss.facingRight ? 1.0 : -1.0;
-                        boss.state = 'run'; 
-                    } else {
-                        boss.vx = 0;
-                        if (Math.random() < 0.01) boss.state = 'idle'; 
+
+                    if (boss.state === 'jump_smash') {
+                        if (boss.pos.y + boss.height >= GROUND_Y) {
+                            boss.state = 'attack'; 
+                            shakeRef.current = 10;
+                            createParticles(boss.pos.x + boss.width/2, GROUND_Y, '#581c87', 10);
+                            if (distance < 150 && player.pos.y + player.height >= GROUND_Y - 20 && player.state !== 'dodge') {
+                                // INFINITE PLAYER HEALTH LOGIC (INTERCEPT BEFORE DAMAGE)
+                                const dmg = BOSS_DAMAGE * 1.5;
+                                if (infinitePlayerHealth && player.health - dmg <= 0) {
+                                    player.health = player.maxHealth;
+                                } else {
+                                    player.health -= dmg;
+                                }
+
+                                player.vx = boss.facingRight ? 15 : -15;
+                                player.vy = -5;
+                                player.state = 'hit';
+                                player.hitStop = 12; 
+                                boss.hitStop = 8; 
+                                setPlayerHealth(player.health);
+                                if (player.health <= 0) {
+                                    player.isDead = true;
+                                    setGameState(GameState.GAME_OVER);
+                                }
+                            }
+                            setTimeout(() => { if(boss.state === 'attack') boss.state = 'idle'; }, 500);
+                        }
                     }
-                }
-                else if (boss.state !== 'attack') {
-                    if (distance > 350) {
-                        boss.vx += boss.facingRight ? 0.2 : -0.2;
-                        boss.vx = Math.max(Math.min(boss.vx, 2), -2);
-                        boss.state = 'run';
-                    } else {
-                        boss.state = 'standoff';
+                    else if (boss.state === 'standoff') {
+                        const diff = distance - PREFERRED_DISTANCE;
+                        const tolerance = 30; 
+                        if (diff < -tolerance) {
+                            boss.vx = boss.facingRight ? -1.5 : 1.5;
+                            boss.state = 'run'; 
+                        } else if (diff > tolerance) {
+                            boss.vx = boss.facingRight ? 1.0 : -1.0;
+                            boss.state = 'run'; 
+                        } else {
+                            boss.vx = 0;
+                            if (Math.random() < 0.01) boss.state = 'idle'; 
+                        }
+                    }
+                    else if (boss.state !== 'attack') {
+                        if (distance > 350) {
+                            boss.vx += boss.facingRight ? 0.2 : -0.2;
+                            boss.vx = Math.max(Math.min(boss.vx, 2), -2);
+                            boss.state = 'run';
+                        } else {
+                            boss.state = 'standoff';
+                        }
                     }
                 }
             } else if (boss.state === 'hit') {
@@ -1427,24 +1551,20 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                     boss.state = 'idle';
                 }
             }
-        } // End AI checks (if !hitStop)
-        
-        if (boss.attackCooldown > 0) boss.attackCooldown--;
-        boss.vy += GRAVITY;
-        boss.pos.x += boss.vx;
-        boss.pos.y += boss.vy;
-        
-        if (boss.pos.y + boss.height > GROUND_Y) {
-            boss.pos.y = GROUND_Y - boss.height;
-            boss.vy = 0;
-        }
-        boss.pos.x = Math.max(0, Math.min(boss.pos.x, 1200 - boss.width));
+            
+            if (boss.attackCooldown > 0) boss.attackCooldown--;
+            boss.vy += GRAVITY;
+            boss.pos.x += boss.vx;
+            boss.pos.y += boss.vy;
+            
+            if (boss.pos.y + boss.height > GROUND_Y) {
+                boss.pos.y = GROUND_Y - boss.height;
+                boss.vy = 0;
+            }
+            boss.pos.x = Math.max(0, Math.min(boss.pos.x, 1200 - boss.width));
 
-        // Boss Animation Update
-        // Skip animation update during hitStop (freeze frame effect)
-        if (boss.hitStop <= 0) {
             let bossAnimSpeed = 10;
-            if (boss.state === 'kowtow_attack') bossAnimSpeed = 6; // Slower animation for weight
+            if (boss.state === 'kowtow_attack') bossAnimSpeed = 6; 
             if (boss.state === 'hit') bossAnimSpeed = 5;
             
             boss.animTimer++;
@@ -1452,13 +1572,19 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                 boss.animFrame++;
                 boss.animTimer = 0;
             }
-        }
+        } 
       }
     }
       
     if (boss.health <= 0) {
-        boss.isDead = true;
-        setGameState(GameState.VICTORY);
+        if (infiniteHealth) {
+             // Already handled in collision, but safe fallback check
+             boss.health = boss.maxHealth;
+             setBossHealth(boss.maxHealth);
+        } else {
+            boss.isDead = true;
+            setGameState(GameState.VICTORY);
+        }
     }
 
     if (boss && !boss.isDead && !player.isDead) {
@@ -1511,29 +1637,27 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     ctx.fillRect(Math.round(x), Math.round(y), w, h);
   };
 
-  const lerp = (start: number, end: number, t: number) => start * (1 - t) + end * t;
-  const easeOutQuad = (t: number) => t * (2 - t);
-  const easeInOutQuad = (t: number) => t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
-
-  const getAnimSpeed = (p: Entity) => {
-      if (p.state === 'run') return 5;
-      if (p.state === 'attack') {
-          if (p.comboCount === 3) return 1; // UPDATED HERE
-          if (p.comboCount === 4) return 1;
-          return 3; // Faster default attack speed (was 5)
-      }
-      if (p.state === 'heavy_attack') return 2;
-      if (p.state === 'dodge') return 3;
-      if (p.state === 'hit') return 10;
-      if (p.state === 'air_attack') return 2;
-      return 8;
-  };
-
   const drawPlayer = (ctx: CanvasRenderingContext2D, p: Entity) => {
     const { width: w, height: h, state, animFrame, comboCount, hitStop } = p;
+    const { 
+        fanFade, fanBrightness, fanOpacity,
+        c3Radius, c3Width, c3Glow, c3Density, c3Opacity, c3Speed,
+        c3BgBrightness, c3BgOpacity, c3BlurSteps, c3BlurFade
+    } = debugParamsRef.current;
     
-    const speed = getAnimSpeed(p);
-    // Using just division as speed is guaranteed to be >= 1 by getAnimSpeed logic
+    // Using speed=1 for combo count 4 to match update logic
+    let speed = 8;
+    if (p.state === 'run') speed = 5;
+    if (p.state === 'attack') {
+        if (p.comboCount === 3) speed = 1; 
+        else if (p.comboCount === 4) speed = 1; 
+        else speed = 3; 
+    }
+    if (p.state === 'heavy_attack') speed = 2;
+    if (p.state === 'dodge') speed = 3;
+    if (p.state === 'hit') speed = 10;
+    if (p.state === 'air_attack') speed = 2;
+
     const smoothT = Math.min(1, p.animTimer / speed);
     const smoothFrame = animFrame + smoothT;
 
@@ -1652,41 +1776,102 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
              ctx.restore();
         }
         else if (comboCount === 3) {
-            // Rotate continuously based on frame count
-            // REVISED for 3 hits in 360 degrees over 12 frames
-            const angle = (smoothFrame / 12) * (Math.PI * 2);
-
-            ctx.translate(0, -35); 
+            // --- COMBO 3 RENDER LOGIC ---
             
-            ctx.globalCompositeOperation = 'lighter';
-            ctx.fillStyle = cGold;
-            ctx.globalAlpha = 0.6;
-            ctx.beginPath();
-            // Increased visual radius to 100
-            ctx.arc(0, 0, 100, angle - 1.5, angle, false);
-            ctx.arc(0, 0, 85, angle, angle - 1.5, true);
-            ctx.fill();
-            ctx.globalAlpha = 1.0;
-            ctx.globalCompositeOperation = 'source-over';
+            ctx.translate(0, -35); // Centered on player chest/hand
 
+            const halfLen = c3Radius;
+            const thick = c3Width;
+
+            // DRAW BACKGROUND DISC
+            if (c3BgOpacity > 0) {
+                ctx.save();
+                ctx.globalCompositeOperation = 'source-over';
+                ctx.globalAlpha = c3BgOpacity;
+                ctx.fillStyle = '#b45309'; 
+                ctx.beginPath();
+                ctx.arc(0, 0, c3Radius, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.restore();
+            }
+            if (c3BgBrightness > 0) {
+                ctx.save();
+                ctx.globalCompositeOperation = 'lighter';
+                ctx.globalAlpha = c3BgBrightness;
+                ctx.fillStyle = '#fbbf24'; 
+                ctx.shadowColor = '#fbbf24';
+                ctx.shadowBlur = 10;
+                ctx.beginPath();
+                ctx.arc(0, 0, c3Radius, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.restore();
+            }
+
+            // Helper to draw a single cross (used for both entity and motion trails)
+            const drawCross = (angleRad: number, alphaMult: number) => {
+                ctx.save();
+                ctx.rotate(angleRad);
+                
+                // Pass 1: Density (Base Color / Opacity)
+                if (c3Density > 0) {
+                    ctx.save();
+                    ctx.globalCompositeOperation = 'source-over'; 
+                    ctx.globalAlpha = c3Density * c3Opacity * alphaMult;
+                    ctx.fillStyle = '#b45309'; 
+                    ctx.fillRect(-thick/2, -halfLen, thick, halfLen*2);
+                    ctx.fillRect(-halfLen, -thick/2, halfLen*2, thick);
+                    ctx.restore();
+                }
+
+                // Pass 2: Glow (Additive)
+                if (c3Glow > 0) {
+                    ctx.save();
+                    ctx.globalCompositeOperation = 'lighter'; 
+                    ctx.shadowColor = '#fbbf24';
+                    ctx.shadowBlur = 20; 
+                    ctx.globalAlpha = c3Glow * c3Opacity * alphaMult;
+                    ctx.fillStyle = '#fbbf24'; 
+                    ctx.fillRect(-thick/2, -halfLen, thick, halfLen*2);
+                    ctx.fillRect(-halfLen, -thick/2, halfLen*2, thick);
+                    ctx.restore();
+                }
+                ctx.restore();
+            };
+
+            const currentAngleDeg = (smoothFrame * c3Speed);
+            const currentAngleRad = currentAngleDeg * (Math.PI / 180);
+            
+            // Draw Motion Blur Compensation (Past Frames)
+            // Logic: Distribute steps uniformly between current frame angle and previous frame angle
+            // to simulate high speed rotation without gaps.
+            const steps = Math.floor(c3BlurSteps);
+            
+            // Calculate gap based on speed (degrees per frame)
+            // Distribute steps evenly within the arc traveled in 1 frame (speed)
+            // e.g. speed 50, steps 1 -> interval 25.
+            const blurIntervalDeg = c3Speed / (steps + 1);
+
+            for (let i = 1; i <= steps; i++) {
+                const lagDeg = i * blurIntervalDeg;
+                const drawAngleRad = (currentAngleDeg - lagDeg) * (Math.PI / 180);
+                
+                // Calculate opacity based on fade parameter
+                // If c3BlurFade is 0, alpha remains 1.0
+                const alpha = Math.max(0, 1.0 - (i * c3BlurFade));
+                
+                drawCross(drawAngleRad, alpha);
+            }
+            
+            // Draw Main Cross (Entity)
+            drawCross(currentAngleRad, 1.0);
+            
+            // Draw Center Highlight (Static)
             ctx.save();
-            ctx.rotate(angle); 
-            
-            ctx.globalCompositeOperation = 'lighter';
-            ctx.shadowColor = '#fbbf24';
-            ctx.shadowBlur = 30; 
-            
-            ctx.fillStyle = cGold;
+            ctx.fillStyle = '#fff';
+            ctx.globalAlpha = 0.8;
             ctx.beginPath();
-            ctx.arc(0, 0, 90, 0, Math.PI*2);
+            ctx.arc(0,0, thick/2, 0, Math.PI*2);
             ctx.fill();
-            
-            ctx.shadowBlur = 0;
-            ctx.globalCompositeOperation = 'source-over';
-
-            // Increased cross/staff visual size
-            drawRect(ctx, -100, -4, 200, 8, cStaff);
-            drawRect(ctx, -4, -100, 8, 200, cGold);
             ctx.restore();
         }
         else if (comboCount === 4) {
@@ -1706,55 +1891,79 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
             ctx.save();
             ctx.translate(0, -35); 
             
-            let angle = 0;
-            const startAngle = -2.5; 
-            const endAngle = 1.8; 
+            const currentT = animFrame + (p.animTimer / 1);
+            const currentAngle = getCombo4AngleFromT(currentT);
+
+            // Faint Background Fan (Dynamic Expansion)
+            if (animFrame >= 5) {
+                // Calculate fade decay
+                let fadeFactor = 1.0;
+                if (animFrame >= 10) {
+                    fadeFactor = Math.max(0, 1 - (animFrame - 10) * fanFade);
+                }
+
+                const currentOpacity = fanOpacity * fadeFactor;
+                const currentBrightness = fanBrightness * fadeFactor;
+                
+                // Dynamic expansion: Fan grows from Start to Current angle
+                const fanEndAngle = Math.max(C4_START_ANGLE, Math.min(C4_END_ANGLE, currentAngle));
+
+                // PASS 1: Density/Opacity (Source Over) - Creates the solid backing
+                if (currentOpacity > 0) {
+                    ctx.save();
+                    ctx.globalCompositeOperation = 'source-over';
+                    ctx.globalAlpha = currentOpacity * 0.3; // Reduced density multiplier to keep it subtle
+                    ctx.fillStyle = '#b45309'; // Darker Amber/Gold for density
+
+                    ctx.beginPath();
+                    ctx.moveTo(0,0);
+                    ctx.arc(0, 0, C4_STAFF_LENGTH, C4_START_ANGLE, fanEndAngle);
+                    ctx.fill();
+                    ctx.restore();
+                }
+
+                // PASS 2: Brightness/Glow (Lighter/Additive) - Creates the magical glow
+                if (currentBrightness > 0) {
+                    ctx.save();
+                    ctx.globalCompositeOperation = 'lighter'; 
+                    ctx.shadowColor = '#fbbf24';
+                    ctx.shadowBlur = 15; 
+                    // Apply fanOpacity to glow as well so it acts as master transparency
+                    ctx.globalAlpha = currentBrightness * fanOpacity; 
+                    ctx.fillStyle = '#fbbf24'; 
+                    
+                    ctx.beginPath();
+                    ctx.moveTo(0,0);
+                    ctx.arc(0, 0, C4_STAFF_LENGTH, C4_START_ANGLE, fanEndAngle);
+                    ctx.fill();
+                    ctx.restore();
+                }
+            }
+
+            // Render interpolated trails
+            if (combo4TrailsRef.current.length > 0) {
+                // Use 'lighten' composition to prevent ugly dark overlaps
+                ctx.globalCompositeOperation = 'lighten';
+                
+                combo4TrailsRef.current.forEach(trail => {
+                     ctx.save();
+                     ctx.rotate(trail.angle);
+                     
+                     ctx.fillStyle = cGold;
+                     ctx.globalAlpha = Math.max(0, trail.life);
+                     
+                     ctx.fillRect(0, -6, 150, 12); 
+                     
+                     ctx.restore();
+                });
+                ctx.globalAlpha = 1.0;
+                ctx.globalCompositeOperation = 'source-over';
+            }
+
+            ctx.rotate(currentAngle);
             
-            if (t <= 5) {
-                const heave = Math.sin(t * 0.5) * 0.1;
-                angle = startAngle + heave;
-            } 
-            else if (t <= 10) {
-                 const progress = (t - 5) / 5;
-                 const ease = progress * progress; 
-                 angle = lerp(startAngle, endAngle, ease);
-                 
-                 // FIX: VISUAL CONSISTENCY FOR ATTACK 4
-                 // Using layered lighter composite to match Attack 3's "light effect" style
-                 ctx.globalCompositeOperation = 'lighter';
-                 ctx.shadowColor = '#fbbf24';
-                 ctx.shadowBlur = 20; // Reduced from 40 to reduce glare
-                 
-                 ctx.fillStyle = cGold;
-                 
-                 // Layer 1: Large diffuse fan (Glow)
-                 ctx.globalAlpha = 0.25; // Reduced from 0.5 to 0.25
-                 ctx.beginPath();
-                 ctx.moveTo(0,0);
-                 ctx.arc(0,0, 170, angle - 0.6, angle, true);
-                 ctx.lineTo(0,0);
-                 ctx.fill();
-
-                 // Layer 2: Core fan (Brighter, smaller)
-                 ctx.globalAlpha = 0.5; // Reduced from 0.8 to 0.5
-                 ctx.beginPath();
-                 ctx.moveTo(0,0);
-                 ctx.arc(0,0, 140, angle - 0.6, angle, true);
-                 ctx.lineTo(0,0);
-                 ctx.fill();
-                 
-                 ctx.shadowBlur = 0;
-                 ctx.globalCompositeOperation = 'source-over';
-                 ctx.globalAlpha = 1.0;
-            }
-            else {
-                 angle = endAngle;
-                 if (t < 14) angle += (Math.random()-0.5)*0.1; 
-            }
-
-            ctx.rotate(angle);
             ctx.shadowColor = '#fbbf24';
-            ctx.shadowBlur = 40;
+            ctx.shadowBlur = 15; 
             drawRect(ctx, -10, -5, 150, 12, cGold); 
             ctx.shadowBlur = 0;
             
@@ -1874,8 +2083,9 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         
         let bossShakeX = 0;
         let bossShakeY = 0;
-        // Immobilize prevents shaking hit stun
-        if (b.state === 'hit' && b.hitStop > 0 && !b.isImmobilized) {
+        
+        // ALWAYS shake if hitstop is active (visual feedback for impact)
+        if (b.hitStop > 0 && !b.isImmobilized) {
             bossShakeX = (Math.random() - 0.5) * 6;
             bossShakeY = (Math.random() - 0.5) * 6;
         }
@@ -1883,29 +2093,23 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         ctx.save();
         ctx.translate(bossShakeX, bossShakeY);
         
-        // Kowtow Rotation Transform
         if (b.state === 'kowtow_attack') {
              const originX = bx + b.width / 2;
              const originY = by + b.height;
              ctx.translate(originX, originY);
              
-             // Determine rotation direction based on facing
              const dir = b.facingRight ? 1 : -1;
              
              let angle = 0;
              const frame = b.animFrame;
              
-             // 0-3: Windup (Lean back away from target)
              if (frame <= 3) {
                  angle = lerp(0, -0.4 * dir, frame/3);
              } 
-             // 4: Slam (Fast forward)
              else if (frame === 4) {
-                 angle = 1.6 * dir; // ~90 degrees forward
+                 angle = 1.6 * dir; 
              }
-             // 5+: Recovery
              else {
-                 // Slowly rise
                  angle = lerp(1.6 * dir, 0, (frame - 5)/7);
              }
              
@@ -1913,10 +2117,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
              ctx.translate(-originX, -originY);
         }
 
-        // Reduced Flash: Flicker 2-3 times during impact to avoid blinding "white screen"
-        // Only active during hitStop (freeze frames), creating a strobe effect.
-        const isFlashing = b.state === 'hit' && 
-                           !b.isImmobilized && 
+        const isFlashing = !b.isImmobilized && 
                            b.hitStop > 0 && 
                            (b.hitStop % 5 > 2); 
 
@@ -1924,16 +2125,13 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
              ctx.fillStyle = '#fff'; 
              ctx.fillRect(bx, by, b.width, b.height);
         } else {
-            // Boss Color Logic
             let bColor = b.state === 'jump_smash' ? '#7e22ce' : '#581c87';
             let bAccent = '#3b0764';
             
-            // Gold tint if immobilized
             if (b.isImmobilized) {
-                bColor = '#fbbf24'; // Gold
-                bAccent = '#d97706'; // Darker Gold
+                bColor = '#fbbf24'; 
+                bAccent = '#d97706'; 
                 
-                // Add glow
                 ctx.shadowColor = '#fbbf24';
                 ctx.shadowBlur = 15;
             }
@@ -1944,7 +2142,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
             
             ctx.shadowBlur = 0;
             
-            // Eye/Details
             drawRect(ctx, b.facingRight ? bx + b.width - 30 : bx + 10, by + 20, 10, 5, '#ef4444');
             
             if (b.state === 'standoff') {
@@ -1998,7 +2195,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       
       accumulatorRef.current += deltaTime;
 
-      // Safety cap to prevent spiral of death on lag spikes
       if (accumulatorRef.current > 100) accumulatorRef.current = 100;
 
       while (accumulatorRef.current >= FIXED_TIME_STEP) {
@@ -2021,13 +2217,258 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     return () => cancelAnimationFrame(reqRef.current);
   }, [gameState, update, draw]);
 
+  // Reset Logic
+  const resetHealth = () => {
+      if (playerRef.current) setPlayerHealth(playerRef.current.maxHealth);
+      if (bossRef.current) setBossHealth(bossRef.current.maxHealth);
+      if (playerRef.current) playerRef.current.health = playerRef.current.maxHealth;
+      if (bossRef.current) bossRef.current.health = bossRef.current.maxHealth;
+  }
+
   return (
-    <canvas
-      ref={canvasRef}
-      width={CANVAS_WIDTH}
-      height={CANVAS_HEIGHT}
-      className="w-full h-full object-contain bg-neutral-900 shadow-2xl"
-    />
+    <div className="relative w-full h-full">
+        <canvas
+        ref={canvasRef}
+        width={CANVAS_WIDTH}
+        height={CANVAS_HEIGHT}
+        className="w-full h-full object-contain bg-neutral-900 shadow-2xl"
+        />
+        
+        {/* Debug UI Toggle */}
+        {gameState === GameState.PLAYING && (
+            <>
+                <button 
+                    onClick={() => setShowDebug(!showDebug)}
+                    className="absolute top-2 left-2 bg-neutral-900/80 text-gray-400 w-8 h-8 flex items-center justify-center rounded-full border border-gray-700 hover:text-white hover:bg-gray-800 z-20 transition-all"
+                >
+                    ⚙️
+                </button>
+
+                {showDebug && (
+                    <div className="absolute top-12 left-2 bg-neutral-900/95 rounded border border-gray-700 text-xs text-gray-300 w-[600px] shadow-xl backdrop-blur z-20 overflow-hidden flex flex-col">
+                        
+                        {/* Tabs */}
+                        <div className="flex border-b border-gray-700 bg-gray-800/50">
+                            <button 
+                                onClick={() => setDebugTab('general')}
+                                className={`flex-1 py-2 text-center font-bold tracking-wider uppercase transition-colors ${debugTab === 'general' ? 'bg-neutral-700/50 text-yellow-500' : 'text-gray-500 hover:bg-gray-800'}`}
+                            >
+                                General
+                            </button>
+                            <button 
+                                onClick={() => setDebugTab('skills')}
+                                className={`flex-1 py-2 text-center font-bold tracking-wider uppercase transition-colors ${debugTab === 'skills' ? 'bg-neutral-700/50 text-yellow-500' : 'text-gray-500 hover:bg-gray-800'}`}
+                            >
+                                Skills
+                            </button>
+                        </div>
+
+                        {/* Tab Content */}
+                        <div className="p-4 min-h-[300px]">
+                            
+                            {/* GENERAL TAB */}
+                            {debugTab === 'general' && (
+                                <div className="flex flex-col gap-4">
+                                    <div className="flex flex-col gap-2">
+                                        <h3 className="font-bold text-gray-400 uppercase text-[10px] tracking-widest mb-1 border-b border-gray-800 pb-1">Boss Behavior</h3>
+                                        <div className="flex gap-2">
+                                            {['normal', 'idle', 'kowtow'].map(b => (
+                                                <button
+                                                    key={b}
+                                                    onClick={() => updateDebug('bossBehavior', b)}
+                                                    className={`px-3 py-1 rounded border ${debugValues.bossBehavior === b ? 'border-yellow-600 bg-yellow-900/30 text-yellow-500' : 'border-gray-700 bg-gray-800 text-gray-400'}`}
+                                                >
+                                                    {b.charAt(0).toUpperCase() + b.slice(1)}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+
+                                    <div className="flex flex-col gap-2">
+                                        <h3 className="font-bold text-gray-400 uppercase text-[10px] tracking-widest mb-1 border-b border-gray-800 pb-1">Cheats</h3>
+                                        <label className="flex items-center gap-2 cursor-pointer p-2 bg-gray-800/30 rounded border border-gray-800 hover:border-gray-600">
+                                            <input 
+                                                type="checkbox"
+                                                checked={debugValues.infinitePlayerHealth}
+                                                onChange={(e) => updateDebug('infinitePlayerHealth', e.target.checked)}
+                                                className="accent-yellow-600"
+                                            />
+                                            <span>Infinite Player Health</span>
+                                        </label>
+                                        <label className="flex items-center gap-2 cursor-pointer p-2 bg-gray-800/30 rounded border border-gray-800 hover:border-gray-600">
+                                            <input 
+                                                type="checkbox"
+                                                checked={debugValues.infiniteHealth}
+                                                onChange={(e) => updateDebug('infiniteHealth', e.target.checked)}
+                                                className="accent-yellow-600"
+                                            />
+                                            <span>Infinite Boss Health</span>
+                                        </label>
+                                    </div>
+
+                                    <div className="mt-4 pt-4 border-t border-gray-700">
+                                         <button 
+                                            onClick={resetHealth}
+                                            className="w-full py-2 bg-red-900/30 border border-red-800 text-red-400 hover:bg-red-900/50 rounded uppercase tracking-widest font-bold"
+                                        >
+                                            Reset All Health
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* SKILLS TAB */}
+                            {debugTab === 'skills' && (
+                                <div className="grid grid-cols-12 gap-4 h-full">
+                                    
+                                    {/* COL 1: Entity Select */}
+                                    <div className="col-span-3 border-r border-gray-700 flex flex-col gap-1 pr-2">
+                                        <h4 className="text-[10px] text-gray-500 uppercase tracking-widest mb-2">Role</h4>
+                                        <button 
+                                            onClick={() => setSelectedEntity('player')}
+                                            className={`text-left px-2 py-1 rounded ${selectedEntity === 'player' ? 'bg-yellow-900/30 text-yellow-500 border-l-2 border-yellow-500' : 'text-gray-400 hover:bg-gray-800'}`}
+                                        >
+                                            Player
+                                        </button>
+                                        <button 
+                                            onClick={() => setSelectedEntity('boss')}
+                                            className={`text-left px-2 py-1 rounded ${selectedEntity === 'boss' ? 'bg-yellow-900/30 text-yellow-500 border-l-2 border-yellow-500' : 'text-gray-400 hover:bg-gray-800'}`}
+                                        >
+                                            Boss
+                                        </button>
+                                    </div>
+
+                                    {/* COL 2: Skill Select */}
+                                    <div className="col-span-3 border-r border-gray-700 flex flex-col gap-1 pr-2">
+                                        <h4 className="text-[10px] text-gray-500 uppercase tracking-widest mb-2">Skill</h4>
+                                        {selectedEntity === 'player' ? (
+                                            <>
+                                                <button 
+                                                    onClick={() => setSelectedSkill('atk3')}
+                                                    className={`text-left px-2 py-1 rounded ${selectedSkill === 'atk3' ? 'bg-yellow-900/30 text-yellow-500 border-l-2 border-yellow-500' : 'text-gray-400 hover:bg-gray-800'}`}
+                                                >
+                                                    Attack 3 (Spin)
+                                                </button>
+                                                <button 
+                                                    onClick={() => setSelectedSkill('atk4')}
+                                                    className={`text-left px-2 py-1 rounded ${selectedSkill === 'atk4' ? 'bg-yellow-900/30 text-yellow-500 border-l-2 border-yellow-500' : 'text-gray-400 hover:bg-gray-800'}`}
+                                                >
+                                                    Attack 4 (Fan)
+                                                </button>
+                                            </>
+                                        ) : (
+                                            <div className="text-gray-600 italic text-xs px-2">No Configurable Skills</div>
+                                        )}
+                                    </div>
+
+                                    {/* COL 3: Config */}
+                                    <div className="col-span-6 overflow-y-auto max-h-[400px] pr-2">
+                                        <h4 className="text-[10px] text-gray-500 uppercase tracking-widest mb-2">Configuration</h4>
+                                        
+                                        {selectedEntity === 'player' && selectedSkill === 'atk3' && (
+                                            <div className="flex flex-col gap-4">
+                                                {/* Visuals Group */}
+                                                <div className="bg-gray-800/30 p-2 rounded border border-gray-800">
+                                                    <h5 className="text-yellow-700 font-bold mb-2">Visuals</h5>
+                                                    <div className="space-y-3">
+                                                        <div><div className="flex justify-between"><span>Radius</span><span className="text-yellow-500">{debugValues.c3Radius}</span></div>
+                                                        <input type="range" min="50" max="200" step="5" value={debugValues.c3Radius} onChange={(e) => updateDebug('c3Radius', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+                                                        
+                                                        <div><div className="flex justify-between"><span>Width</span><span className="text-yellow-500">{debugValues.c3Width}</span></div>
+                                                        <input type="range" min="2" max="30" step="1" value={debugValues.c3Width} onChange={(e) => updateDebug('c3Width', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+                                                        
+                                                        <div><div className="flex justify-between"><span>Glow</span><span className="text-yellow-500">{debugValues.c3Glow.toFixed(1)}</span></div>
+                                                        <input type="range" min="0" max="2" step="0.1" value={debugValues.c3Glow} onChange={(e) => updateDebug('c3Glow', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+                                                        
+                                                        <div><div className="flex justify-between"><span>Density</span><span className="text-yellow-500">{debugValues.c3Density.toFixed(1)}</span></div>
+                                                        <input type="range" min="0" max="1" step="0.1" value={debugValues.c3Density} onChange={(e) => updateDebug('c3Density', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+                                                    </div>
+                                                </div>
+
+                                                {/* Blur Group */}
+                                                <div className="bg-gray-800/30 p-2 rounded border border-gray-800">
+                                                    <h5 className="text-yellow-700 font-bold mb-2">Motion Blur</h5>
+                                                    <div className="space-y-3">
+                                                        <div><div className="flex justify-between"><span>Steps</span><span className="text-yellow-500">{debugValues.c3BlurSteps}</span></div>
+                                                        <input type="range" min="0" max="10" step="1" value={debugValues.c3BlurSteps} onChange={(e) => updateDebug('c3BlurSteps', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+                                                        
+                                                        <div><div className="flex justify-between"><span>Blur Fade</span><span className="text-yellow-500">{debugValues.c3BlurFade.toFixed(2)}</span></div>
+                                                        <input type="range" min="0" max="0.5" step="0.05" value={debugValues.c3BlurFade} onChange={(e) => updateDebug('c3BlurFade', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+                                                    </div>
+                                                </div>
+
+                                                 {/* Background Group */}
+                                                <div className="bg-gray-800/30 p-2 rounded border border-gray-800">
+                                                    <h5 className="text-yellow-700 font-bold mb-2">Background Disc</h5>
+                                                    <div className="space-y-3">
+                                                        <div><div className="flex justify-between"><span>BG Glow</span><span className="text-yellow-500">{debugValues.c3BgBrightness.toFixed(1)}</span></div>
+                                                        <input type="range" min="0" max="1" step="0.1" value={debugValues.c3BgBrightness} onChange={(e) => updateDebug('c3BgBrightness', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+                                                        
+                                                        <div><div className="flex justify-between"><span>BG Opacity</span><span className="text-yellow-500">{debugValues.c3BgOpacity.toFixed(1)}</span></div>
+                                                        <input type="range" min="0" max="1" step="0.1" value={debugValues.c3BgOpacity} onChange={(e) => updateDebug('c3BgOpacity', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+                                                    </div>
+                                                </div>
+
+                                                {/* Logic Group */}
+                                                <div className="bg-gray-800/30 p-2 rounded border border-gray-800">
+                                                    <h5 className="text-yellow-700 font-bold mb-2">Logic / Stats</h5>
+                                                    <div className="space-y-3">
+                                                        <div><div className="flex justify-between"><span>Rotations</span><span className="text-yellow-500">{debugValues.c3Rotations}</span></div>
+                                                        <input type="range" min="1" max="5" step="1" value={debugValues.c3Rotations} onChange={(e) => updateDebug('c3Rotations', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+
+                                                        <div><div className="flex justify-between"><span>Speed</span><span className="text-yellow-500">{debugValues.c3Speed}</span></div>
+                                                        <input type="range" min="5" max="50" step="1" value={debugValues.c3Speed} onChange={(e) => updateDebug('c3Speed', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+
+                                                        <div><div className="flex justify-between"><span>Extra Hits</span><span className="text-yellow-500">{debugValues.c3ExtraHits}</span></div>
+                                                        <input type="range" min="0" max="10" step="1" value={debugValues.c3ExtraHits} onChange={(e) => updateDebug('c3ExtraHits', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+
+                                                        <div><div className="flex justify-between"><span>Total Dmg</span><span className="text-yellow-500">{debugValues.c3TotalDamage}</span></div>
+                                                        <input type="range" min="10" max="100" step="5" value={debugValues.c3TotalDamage} onChange={(e) => updateDebug('c3TotalDamage', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+
+                                                        <div><div className="flex justify-between"><span>Stun Frames</span><span className="text-yellow-500">{debugValues.c3Stun}</span></div>
+                                                        <input type="range" min="0" max="20" step="1" value={debugValues.c3Stun} onChange={(e) => updateDebug('c3Stun', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        {selectedEntity === 'player' && selectedSkill === 'atk4' && (
+                                             <div className="flex flex-col gap-4">
+                                                <div className="bg-gray-800/30 p-2 rounded border border-gray-800">
+                                                    <h5 className="text-yellow-700 font-bold mb-2">Trails</h5>
+                                                    <div className="space-y-3">
+                                                        <div><div className="flex justify-between"><span>Decay</span><span className="text-yellow-500">{debugValues.trailDecay.toFixed(2)}</span></div>
+                                                        <input type="range" min="0.05" max="0.4" step="0.01" value={debugValues.trailDecay} onChange={(e) => updateDebug('trailDecay', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+                                                        
+                                                        <div><div className="flex justify-between"><span>Step (Density)</span><span className="text-yellow-500">{debugValues.trailStep.toFixed(2)}</span></div>
+                                                        <input type="range" min="0.01" max="0.3" step="0.01" value={debugValues.trailStep} onChange={(e) => updateDebug('trailStep', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+                                                    </div>
+                                                </div>
+
+                                                <div className="bg-gray-800/30 p-2 rounded border border-gray-800">
+                                                    <h5 className="text-yellow-700 font-bold mb-2">Fan Glow</h5>
+                                                    <div className="space-y-3">
+                                                        <div><div className="flex justify-between"><span>Brightness</span><span className="text-yellow-500">{debugValues.fanBrightness.toFixed(1)}</span></div>
+                                                        <input type="range" min="0" max="2.0" step="0.1" value={debugValues.fanBrightness} onChange={(e) => updateDebug('fanBrightness', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+                                                        
+                                                        <div><div className="flex justify-between"><span>Opacity</span><span className="text-yellow-500">{debugValues.fanOpacity.toFixed(2)}</span></div>
+                                                        <input type="range" min="0" max="1.0" step="0.05" value={debugValues.fanOpacity} onChange={(e) => updateDebug('fanOpacity', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+
+                                                        <div><div className="flex justify-between"><span>Fade Speed</span><span className="text-yellow-500">{debugValues.fanFade.toFixed(2)}</span></div>
+                                                        <input type="range" min="0.01" max="0.5" step="0.01" value={debugValues.fanFade} onChange={(e) => updateDebug('fanFade', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+                                                    </div>
+                                                </div>
+                                             </div>
+                                        )}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                )}
+            </>
+        )}
+    </div>
   );
 };
 
