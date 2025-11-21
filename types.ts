@@ -25,7 +25,7 @@ export interface Entity {
   isDead: boolean;
   facingRight: boolean;
   type: 'player' | 'enemy' | 'boss';
-  state: 'idle' | 'run' | 'jump' | 'fall' | 'attack' | 'air_attack' | 'heavy_attack' | 'dodge' | 'hit' | 'jump_smash' | 'standoff';
+  state: 'idle' | 'run' | 'jump' | 'fall' | 'attack' | 'air_attack' | 'heavy_attack' | 'dodge' | 'hit' | 'jump_smash' | 'standoff' | 'kowtow_attack';
   attackCooldown: number;
   dodgeCooldown: number;
   chargeTimer: number; // For heavy attack calculation

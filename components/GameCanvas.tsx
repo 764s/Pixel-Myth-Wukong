@@ -24,6 +24,7 @@ const DODGE_COOLDOWN = 40;
 const DODGE_STAMINA_COST = 20;
 
 const BOSS_DAMAGE = 15;
+const BOSS_KOWTOW_DAMAGE = 25; // High damage for the slam
 const CHARGE_THRESHOLD = 20; 
 const COMBO_WINDOW_FRAMES = 50; 
 
@@ -192,7 +193,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     // Key: E Minor (Heroic/Rock)
     const E2=82.41, G2=98.00, A2=110.00, B2=123.47;
     const D3=146.83, E3=164.81, G3=196.00, A3=220.00, B3=246.94;
-    const C4=261.63, D4=293.66, E4=329.63, Fs4=369.99, G4=392.00, A4=440.00, B4=493.88;
+    const D4=293.66, E4=329.63, Fs4=369.99, G4=392.00, A4=440.00, B4=493.88;
     const D5=587.33, E5=659.25;
 
     // Driving Rock Bass (Sawtooth) - 16 note loop
@@ -502,6 +503,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       vx: 0,
       vy: 0,
       state: 'idle',
+      isDead: false, // Reset dead status to ensure gravity applies
       animFrame: 0,
       animTimer: 0,
       attackCooldown: 0,
@@ -529,7 +531,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       facingRight: false,
       type: 'boss',
       state: 'idle',
-      attackCooldown: 100,
+      attackCooldown: 60, // Start with a delay
       dodgeCooldown: 0,
       chargeTimer: 0,
       comboCount: 0,
@@ -594,7 +596,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         if (center1 < center2) {
             e1.pos.x -= pushForce;
             if (e2.type === 'boss') {
-                if (!e2.isImmobilized) e2.vx = 0;
+                if (!e2.isImmobilized && e2.state !== 'kowtow_attack') e2.vx = 0;
             } else {
                 e2.pos.x += pushForce;
             }
@@ -602,7 +604,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         } else {
             e1.pos.x += pushForce;
             if (e2.type === 'boss') {
-                if (!e2.isImmobilized) e2.vx = 0;
+                if (!e2.isImmobilized && e2.state !== 'kowtow_attack') e2.vx = 0;
             } else {
                 e2.pos.x -= pushForce;
             }
@@ -652,10 +654,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
            if (facingTarget && Math.abs(dist) < range) {
                boss.isImmobilized = true;
                boss.immobilizeTimer = 300; // 5 seconds
-               // Lock visual state
-               boss.state = 'idle'; 
-               boss.vx = 0;
-               boss.vy = 0;
+               // NOTE: Do NOT reset boss.state or velocity here. 
+               // Immobilize should pause time, not reset state.
                
                playSound('spell');
                createParticles(boss.pos.x + boss.width/2, boss.pos.y + boss.height/2, '#fbbf24', 30, 4);
@@ -933,6 +933,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                      if (player.state === 'heavy_attack') kForce = 25; 
                      
                      boss.vx = player.facingRight ? kForce : -kForce;
+                     // Don't interrupt kowtow attack if poised (optional, but standard game logic usually interrupts)
+                     // Let's allow interruption for now to feel fair.
                      boss.state = 'hit';
                      boss.animTimer = 0;
                      
@@ -1049,10 +1051,10 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     // --- 2. Boss Logic ---
     if (boss && !boss.isDead) {
       if (boss.isImmobilized) {
-          // FROZEN STATE
-          boss.vx = 0;
-          boss.vy = 0;
-          // boss.state stays as 'idle' or whatever it was when frozen, but we stop logic
+          // FROZEN STATE (Immobilize)
+          // Pause time: Do NOT update physics, animations or state transitions.
+          // Only update the timer and emit effects.
+          
           if (boss.immobilizeTimer && boss.immobilizeTimer > 0) {
              boss.immobilizeTimer--;
              
@@ -1062,9 +1064,11 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
              }
           } else {
              boss.isImmobilized = false;
+             // Resume naturally as we fall through to the else block next frame
           }
       } else {
-        // NORMAL STATE
+        // NORMAL STATE (Physics & Logic Active)
+        
         if (boss.hitStop > 0) {
             boss.hitStop--;
         } else {
@@ -1072,8 +1076,102 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
             const distance = Math.abs(player.pos.x - boss.pos.x);
             const PREFERRED_DISTANCE = 220;
             
-            if (boss.state !== 'hit') {
+            // --- DEBUG: FORCE KOWTOW ATTACK ---
+            // If not busy with another high-priority state, check cooldown and force kowtow.
+            const isBusy = ['attack', 'jump_smash', 'hit', 'kowtow_attack'].includes(boss.state);
+            if (!isBusy) {
+                 if (boss.attackCooldown <= 0) {
+                      boss.state = 'kowtow_attack';
+                      boss.animFrame = 0;
+                      boss.animTimer = 0;
+                      boss.vx = 0; // Stop movement for the attack
+                 }
+            }
+
+            if (boss.state === 'kowtow_attack') {
+                // KOWTOW ATTACK LOGIC
+                // Frames 0-3: Windup (Lean back)
+                // Frame 4: Slam Impact
+                // Frames 5-12: Recovery (Head stuck/Get up)
+                
+                const IMPACT_FRAME = 4;
+                
+                if (boss.animFrame === IMPACT_FRAME && boss.animTimer === 0) { 
+                     // Trigger ONCE when entering frame 4
+                     playSound('hit_heavy');
+                     shakeRef.current = 15;
+                     
+                     // Visuals: Shockwave
+                     // Calculate head position based on facing
+                     const headX = boss.facingRight ? boss.pos.x + boss.width + 40 : boss.pos.x - 40;
+                     const headY = GROUND_Y;
+                     
+                     // Central puff
+                     createParticles(headX, headY, '#a855f7', 8, 12); // Purple impact core
+                     createParticles(headX, headY, '#ffffff', 8, 8); // Dust core
+                     
+                     // New Visuals: Shockwave Hint (Low Presence, Range Diffusion)
+                     // Calculate speed to reach 150px in approx 20 frames (particle life)
+                     const shockwaveRange = 150;
+                     const particleLifeFrames = 20;
+                     const swSpeed = shockwaveRange / particleLifeFrames; 
+                     
+                     for(let i=0; i<8; i++) {
+                         // Right Wave
+                         particlesRef.current.push({
+                             x: headX, 
+                             y: headY - 2,
+                             vx: swSpeed * (0.9 + Math.random() * 0.2), // Fast outward speed
+                             vy: (Math.random() - 0.5) * 0.5, 
+                             life: 1.0,
+                             color: 'rgba(168, 162, 158, 0.5)', // Faint stone dust (Tailwind stone-400, low alpha)
+                             size: 2 + Math.random() * 2
+                         });
+                         // Left Wave
+                         particlesRef.current.push({
+                             x: headX, 
+                             y: headY - 2,
+                             vx: -swSpeed * (0.9 + Math.random() * 0.2),
+                             vy: (Math.random() - 0.5) * 0.5,
+                             life: 1.0,
+                             color: 'rgba(168, 162, 158, 0.5)',
+                             size: 2 + Math.random() * 2
+                         });
+                     }
+                     
+                     // Hit Detection (AOE)
+                     const range = shockwaveRange; // Match visual
+                     const dist = Math.abs((player.pos.x + player.width/2) - headX);
+                     const vertDist = Math.abs((player.pos.y + player.height) - headY);
+                     
+                     // Must be on ground or close to it, and within range
+                     if (dist < range && vertDist < 40 && player.state !== 'dodge') {
+                          player.health -= BOSS_KOWTOW_DAMAGE;
+                          player.state = 'hit';
+                          player.hitStop = 15;
+                          player.vy = -10; // Pop up
+                          player.vx = boss.facingRight ? 8 : -8; // Knockback
+                          setPlayerHealth(player.health);
+                          createParticles(player.pos.x, player.pos.y, '#ef4444', 8);
+                          if (player.health <= 0) {
+                                player.isDead = true;
+                                setGameState(GameState.GAME_OVER);
+                          }
+                     }
+                }
+
+                if (boss.animFrame > 12) {
+                    boss.state = 'idle';
+                    boss.animFrame = 0;
+                    boss.attackCooldown = 60; // Wait 1 second before next attack (Debug purpose)
+                }
+            }
+            else if (boss.state !== 'hit') {
+                // Standard AI (Lower priority than debug loop above, so kowtow will likely override)
+                // Keeping basic movement logic so boss doesn't freeze between kowtows
+                
                 if (boss.state === 'run' && distance < 250 && distance > 100 && Math.random() < 0.02 && boss.attackCooldown <= 0) {
+                    // Suppressed by debug logic mostly, but harmless to keep
                     boss.state = 'jump_smash'; 
                     boss.vy = -15; 
                     boss.vx = boss.facingRight ? 8 : -8;
@@ -1081,8 +1179,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                 }
                 else if (boss.state === 'run') {
                     if (distance < 350 && distance > 200 && Math.random() < 0.05) {
-                    boss.state = 'standoff';
-                    boss.animTimer = 0;
+                        boss.state = 'standoff';
+                        boss.animTimer = 0;
                     }
                     if (distance < PREFERRED_DISTANCE) {
                         boss.state = 'standoff';
@@ -1119,49 +1217,16 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                         boss.vx = 0;
                         if (Math.random() < 0.01) boss.state = 'idle'; 
                     }
-                    
-                    if (boss.attackCooldown <= 0 && distance < 120) {
-                        boss.state = 'attack';
-                    }
                 }
                 else if (boss.state !== 'attack') {
-                if (distance > 350) {
-                    boss.vx += boss.facingRight ? 0.2 : -0.2;
-                    boss.vx = Math.max(Math.min(boss.vx, 2), -2);
-                    boss.state = 'run';
-                } else {
-                    boss.state = 'standoff';
+                    if (distance > 350) {
+                        boss.vx += boss.facingRight ? 0.2 : -0.2;
+                        boss.vx = Math.max(Math.min(boss.vx, 2), -2);
+                        boss.state = 'run';
+                    } else {
+                        boss.state = 'standoff';
+                    }
                 }
-                
-                if (boss.attackCooldown <= 0 && distance < 100 && !player.isDead) {
-                    boss.state = 'attack';
-                    boss.attackCooldown = 100;
-                    
-                    setTimeout(() => {
-                        if(boss.state === 'attack' && !boss.isDead && !boss.isImmobilized) { 
-                            const currDist = Math.abs(player.pos.x - boss.pos.x);
-                            const heightDiff = Math.abs(player.pos.y - boss.pos.y);
-                            if (currDist < 110 && heightDiff < 50 && player.state !== 'dodge') {
-                                player.health -= BOSS_DAMAGE;
-                                player.vx = boss.facingRight ? 10 : -10;
-                                player.vy = -5;
-                                player.state = 'hit';
-                                player.animFrame = 0;
-                                player.hitStop = 8;
-                                boss.hitStop = 6;
-                                setPlayerHealth(player.health);
-                                shakeRef.current = 10;
-                                createParticles(player.pos.x, player.pos.y, '#ef4444', 10);
-                                playSound('hit');
-                                if (player.health <= 0) {
-                                    player.isDead = true;
-                                    setGameState(GameState.GAME_OVER);
-                                }
-                            }
-                        }
-                    }, 400);
-                }
-            }
             } else if (boss.state === 'hit') {
                 boss.vx *= 0.9;
                 if (Math.abs(boss.vx) < 0.1) boss.state = 'idle';
@@ -1176,24 +1241,28 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
             boss.pos.y += boss.vy;
             
             if (boss.pos.y + boss.height > GROUND_Y) {
-            boss.pos.y = GROUND_Y - boss.height;
-            boss.vy = 0;
+                boss.pos.y = GROUND_Y - boss.height;
+                boss.vy = 0;
             }
             boss.pos.x = Math.max(0, Math.min(boss.pos.x, 1200 - boss.width));
 
+            // Boss Animation Update
+            let bossAnimSpeed = 10;
+            if (boss.state === 'kowtow_attack') bossAnimSpeed = 6; // Slower animation for weight
+            if (boss.state === 'hit') bossAnimSpeed = 5;
+            
             boss.animTimer++;
-            if (boss.animTimer > 10) {
+            if (boss.animTimer > bossAnimSpeed) {
                 boss.animFrame++;
                 boss.animTimer = 0;
             }
+        }
       }
       
       if (boss.health <= 0) {
             boss.isDead = true;
             setGameState(GameState.VICTORY);
         }
-    }
-    }
 
     if (boss && !boss.isDead && !player.isDead) {
         resolveEntityCollision(player, boss);
@@ -1236,6 +1305,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
     cameraXRef.current += (targetCamX - cameraXRef.current) * 0.1;
     cameraXRef.current = Math.max(0, Math.min(cameraXRef.current, 600)); 
+    }
 
   }, [gameState, setGameState, setPlayerHealth, setBossHealth, setStamina, setScore, playSound]);
 
@@ -1597,6 +1667,36 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
         ctx.save();
         ctx.translate(bossShakeX, bossShakeY);
+        
+        // Kowtow Rotation Transform
+        if (b.state === 'kowtow_attack') {
+             const originX = bx + b.width / 2;
+             const originY = by + b.height;
+             ctx.translate(originX, originY);
+             
+             // Determine rotation direction based on facing
+             const dir = b.facingRight ? 1 : -1;
+             
+             let angle = 0;
+             const frame = b.animFrame;
+             
+             // 0-3: Windup (Lean back away from target)
+             if (frame <= 3) {
+                 angle = lerp(0, -0.4 * dir, frame/3);
+             } 
+             // 4: Slam (Fast forward)
+             else if (frame === 4) {
+                 angle = 1.6 * dir; // ~90 degrees forward
+             }
+             // 5+: Recovery
+             else {
+                 // Slowly rise
+                 angle = lerp(1.6 * dir, 0, (frame - 5)/7);
+             }
+             
+             ctx.rotate(angle);
+             ctx.translate(-originX, -originY);
+        }
 
         if (b.state === 'hit' && b.hitStop > 0 && !b.isImmobilized) {
              ctx.fillStyle = '#fff'; 
