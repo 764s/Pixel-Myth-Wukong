@@ -136,8 +136,9 @@ const GameUI: React.FC<GameUIProps> = ({
       {/* Controls Overlay */}
       <div className="absolute bottom-4 right-4 text-gray-500 text-[10px] md:text-xs font-serif bg-black/60 p-3 border border-gray-800 rounded backdrop-blur-sm pointer-events-none">
         <div className="flex flex-col gap-1">
-            <div className="flex justify-between gap-4"><span className="text-yellow-700 font-bold">WASD / Arrows</span> <span>Move</span></div>
-            <div className="flex justify-between gap-4"><span className="text-yellow-700 font-bold">J / Space</span> <span>Attack</span></div>
+            <div className="flex justify-between gap-4"><span className="text-yellow-700 font-bold">AD</span> <span>Move</span></div>
+            <div className="flex justify-between gap-4"><span className="text-yellow-700 font-bold">Space</span> <span>Jump</span></div>
+            <div className="flex justify-between gap-4"><span className="text-yellow-700 font-bold">J</span> <span>Attack</span></div>
             <div className="flex justify-between gap-4"><span className="text-yellow-700 font-bold">Hold J</span> <span>Heavy</span></div>
             <div className="flex justify-between gap-4"><span className="text-yellow-700 font-bold">L / Shift</span> <span>Dodge</span></div>
             <div className="flex justify-between gap-4"><span className="text-yellow-700 font-bold">K</span> <span>Immobilize</span></div>

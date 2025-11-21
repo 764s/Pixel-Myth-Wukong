@@ -539,6 +539,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
   // --- Input Handling ---
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.code === 'Space') e.preventDefault(); // Prevent scrolling
       keysRef.current[e.code] = true;
       initAudio(); 
     };
@@ -707,7 +708,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
           player.comboCount = 0;
       }
 
-      const isAttackPressed = keysRef.current['Space'] || keysRef.current['KeyJ'];
+      const isAttackPressed = keysRef.current['KeyJ'];
       // Removed KeyK from dodge
       const isDodgePressed = keysRef.current['ShiftLeft'] || keysRef.current['KeyL']; 
       const isSpellPressed = keysRef.current['KeyK'];
@@ -910,7 +911,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
          player.vx *= 0.90; 
       }
 
-      if ((keysRef.current['ArrowUp'] || keysRef.current['KeyW']) && onGround && !movementLocked && player.state !== 'attack') {
+      // Adjusted Jump to Space Only
+      if ((keysRef.current['Space']) && onGround && !movementLocked && player.state !== 'attack') {
         player.vy = JUMP_FORCE;
         playSound('jump');
         createParticles(player.pos.x + player.width/2, player.pos.y + player.height, '#78350f', 5); 
@@ -1258,7 +1260,11 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         
         // If not in hitstop (visual freeze), run AI
         if (boss.hitStop <= 0) {
-            boss.facingRight = player.pos.x > boss.pos.x;
+            // FIX: Prevent turning during kowtow attack
+            if (boss.state !== 'kowtow_attack') {
+                boss.facingRight = player.pos.x > boss.pos.x;
+            }
+
             const distance = Math.abs(player.pos.x - boss.pos.x);
             const PREFERRED_DISTANCE = 220;
             
@@ -1713,14 +1719,31 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                  const ease = progress * progress; 
                  angle = lerp(startAngle, endAngle, ease);
                  
+                 // FIX: VISUAL CONSISTENCY FOR ATTACK 4
+                 // Using layered lighter composite to match Attack 3's "light effect" style
                  ctx.globalCompositeOperation = 'lighter';
+                 ctx.shadowColor = '#fbbf24';
+                 ctx.shadowBlur = 20; // Reduced from 40 to reduce glare
+                 
                  ctx.fillStyle = cGold;
-                 ctx.globalAlpha = 0.8;
+                 
+                 // Layer 1: Large diffuse fan (Glow)
+                 ctx.globalAlpha = 0.25; // Reduced from 0.5 to 0.25
                  ctx.beginPath();
                  ctx.moveTo(0,0);
-                 ctx.arc(0,0, 160, angle - 0.6, angle, true);
+                 ctx.arc(0,0, 170, angle - 0.6, angle, true);
                  ctx.lineTo(0,0);
                  ctx.fill();
+
+                 // Layer 2: Core fan (Brighter, smaller)
+                 ctx.globalAlpha = 0.5; // Reduced from 0.8 to 0.5
+                 ctx.beginPath();
+                 ctx.moveTo(0,0);
+                 ctx.arc(0,0, 140, angle - 0.6, angle, true);
+                 ctx.lineTo(0,0);
+                 ctx.fill();
+                 
+                 ctx.shadowBlur = 0;
                  ctx.globalCompositeOperation = 'source-over';
                  ctx.globalAlpha = 1.0;
             }
@@ -1733,7 +1756,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
             ctx.shadowColor = '#fbbf24';
             ctx.shadowBlur = 40;
             drawRect(ctx, -10, -5, 150, 12, cGold); 
-            drawRect(ctx, 140, -8, 20, 18, '#fff'); 
             ctx.shadowBlur = 0;
             
             ctx.restore();
