@@ -176,7 +176,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
       // Setsugekka (N)
       setsuDist: 7, // Snow displacement (Short & Sharp)
-      setsuChargeFriction: 0.94, // Snow Charge Slide Friction (Higher = slipperier)
+      setsuChargeFriction: 0.96, // Snow Charge Slide Friction (Increased to allow more slide)
       setsuDamage: 20,
       getsuDamage: 35,
       getsuJumpHeight: -10,
@@ -237,6 +237,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     hasHitInAir: false,
     hasDealtDamage: false,
     hitStop: 0,
+    flashTimer: 0,
     spellCooldown: 0,
     techCooldown: 0,
     sheatheTimer: 0
@@ -801,6 +802,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       hasHitInAir: false,
       hasDealtDamage: false,
       hitStop: 0,
+      flashTimer: 0,
       spellCooldown: 0,
       techCooldown: 0,
       sheatheTimer: 0
@@ -828,6 +830,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       animFrame: 0,
       animTimer: 0,
       hitStop: 0,
+      flashTimer: 0,
       isImmobilized: false,
       immobilizeTimer: 0,
       immobilizeDamageTaken: 0
@@ -934,7 +937,12 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     // --- 1. Player Logic ---
     if (player.hitStop > 0) {
         player.hitStop--;
-    } else if (!player.isDead) {
+    } 
+    if (player.flashTimer && player.flashTimer > 0) {
+        player.flashTimer--;
+    }
+    
+    if (!player.isDead && player.hitStop <= 0) { // Movement logic allowed if not frozen
       const onGround = player.pos.y + player.height >= GROUND_Y;
       
       if (player.attackCooldown > 0) player.attackCooldown--;
@@ -1066,7 +1074,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
               // Visual Cue for full charge
               playSound('break_spell'); // Use a sharp ping
               shakeRef.current = 5;
-              createParticles(player.pos.x+player.width/2, player.pos.y+player.height/2, '#fff', 20, 8);
+              createParticles(player.pos.x + player.width/2, player.pos.y + player.height/2, '#fff', 20, 8);
           }
       }
       // Cancel Charge if N is released before threshold
@@ -1350,6 +1358,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                     boss.hitStop = kStun;
                     player.hitStop = 6;
                     
+                    if (!boss.isImmobilized) boss.flashTimer = 5;
+
                     boss.state = 'hit';
                     boss.animFrame = 0;
                     createParticles(boss.pos.x + boss.width/2, boss.pos.y + boss.height/2, kColor, 15, 6);
@@ -1770,6 +1780,11 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                      player.hitStop = stopDuration; 
                      boss.hitStop = stopDuration;
 
+                     // Apply flash (unless immobilized)
+                     if (!boss.isImmobilized) {
+                         boss.flashTimer = 6;
+                     }
+
                      shakeRef.current = shakeInt; 
                      
                      playSound(isHeavyHit ? 'hit_heavy' : 'hit');
@@ -1886,7 +1901,11 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
           // Check immobilize timer even during hitstop to prevent indefinite extension
           if (boss.isImmobilized && boss.immobilizeTimer > 0) boss.immobilizeTimer--; 
       } 
-      else if (boss.isImmobilized) {
+      if (boss.flashTimer && boss.flashTimer > 0) {
+          boss.flashTimer--;
+      }
+
+      if (boss.hitStop <= 0 && boss.isImmobilized) {
           // Immobilized Logic: Freezes Physics and Animation
           if (boss.immobilizeTimer && boss.immobilizeTimer > 0) {
             boss.immobilizeTimer--;
@@ -1898,7 +1917,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
             boss.isImmobilized = false;
           }
       }
-      else {
+      else if (boss.hitStop <= 0) {
           // Only apply AI Decision overrides if not reacting to damage
           const isReacting = boss.state === 'hit'; // Immobilize check handled in branch above
           
@@ -2987,37 +3006,41 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
              ctx.translate(-originX, -originY);
         }
 
-        const isFlashing = !b.isImmobilized && 
-                           b.hitStop > 0 && 
-                           (b.hitStop % 5 > 2); 
+        // 1. Determine Colors
+        let bColor = b.state === 'jump_smash' ? '#7e22ce' : '#581c87';
+        let bAccent = '#3b0764';
+        
+        if (b.isImmobilized) {
+            bColor = '#fbbf24'; 
+            bAccent = '#d97706'; 
+            ctx.shadowColor = '#fbbf24';
+            ctx.shadowBlur = 15;
+        }
+        
+        // 2. Draw Base Boss (Normal Rendering)
+        drawRect(ctx, bx, by, b.width, b.height, bColor); 
+        drawRect(ctx, bx - 10, by + 10, 20, 60, bAccent); 
+        drawRect(ctx, bx + b.width - 10, by + 10, 20, 60, bAccent);
+        
+        ctx.shadowBlur = 0;
+        
+        // 3. Draw Details (Eyes/Accents)
+        drawRect(ctx, b.facingRight ? bx + b.width - 30 : bx + 10, by + 20, 10, 5, '#ef4444');
+        if (b.state === 'standoff') {
+            drawRect(ctx, bx + 20, by - 20, 10, 10, '#ef4444'); 
+            drawRect(ctx, bx + 40, by - 20, 10, 10, '#ef4444');
+        }
 
+        // 4. Draw Flash Overlay (White tint with low opacity on top)
+        const isFlashing = !b.isImmobilized && (b.flashTimer && b.flashTimer > 0);
         if (isFlashing) {
-             ctx.fillStyle = '#fff'; 
-             ctx.fillRect(bx, by, b.width, b.height);
-        } else {
-            let bColor = b.state === 'jump_smash' ? '#7e22ce' : '#581c87';
-            let bAccent = '#3b0764';
-            
-            if (b.isImmobilized) {
-                bColor = '#fbbf24'; 
-                bAccent = '#d97706'; 
-                
-                ctx.shadowColor = '#fbbf24';
-                ctx.shadowBlur = 15;
-            }
-            
-            drawRect(ctx, bx, by, b.width, b.height, bColor); 
-            drawRect(ctx, bx - 10, by + 10, 20, 60, bAccent); 
-            drawRect(ctx, bx + b.width - 10, by + 10, 20, 60, bAccent);
-            
-            ctx.shadowBlur = 0;
-            
-            drawRect(ctx, b.facingRight ? bx + b.width - 30 : bx + 10, by + 20, 10, 5, '#ef4444');
-            
-            if (b.state === 'standoff') {
-                drawRect(ctx, bx + 20, by - 20, 10, 10, '#ef4444'); 
-                drawRect(ctx, bx + 40, by - 20, 10, 10, '#ef4444');
-            }
+             ctx.save();
+             ctx.globalAlpha = 0.25; // Intensity ~2.5/10
+             // Redraw the main body shapes in pure white
+             drawRect(ctx, bx, by, b.width, b.height, '#ffffff'); 
+             drawRect(ctx, bx - 10, by + 10, 20, 60, '#ffffff'); 
+             drawRect(ctx, bx + b.width - 10, by + 10, 20, 60, '#ffffff');
+             ctx.restore();
         }
         
         if (b.state === 'jump_smash') {
