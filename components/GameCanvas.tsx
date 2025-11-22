@@ -1629,11 +1629,32 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                           attackBoxW = slamReach;
                       }
                   }
-                  // Setsugekka Logic Height Check for Air
-                  if (player.state === 'setsugekka' && player.animFrame > 10) {
-                       // Moon/Flower hits are taller
-                       attackBoxY = player.pos.y - 50;
-                       attackBoxH = player.height + 100; 
+                  // Setsugekka Hitbox Adjustments
+                  if (player.state === 'setsugekka') {
+                      if (player.animFrame <= 8) {
+                           // Snow Phase: Dynamic Range & Center Origin
+                           // Visual lerps from 20 to 150 over 6 frames
+                           const progress = Math.min(1, player.animFrame / 6);
+                           const currentRange = lerp(20, 150, easeOutQuad(progress));
+                           
+                           attackBoxW = currentRange;
+                           
+                           // Start from Center of player (Visual origin)
+                           if (player.facingRight) {
+                               attackBoxX = player.pos.x + player.width / 2;
+                           } else {
+                               attackBoxX = (player.pos.x + player.width / 2) - currentRange;
+                           }
+                           
+                           // Vertical focus (Horizontal slash)
+                           const slashCenterY = player.pos.y + player.height - 35;
+                           attackBoxY = slashCenterY - 25; // +/- 25px forgiveness
+                           attackBoxH = 50;
+                      } else if (player.animFrame > 10) {
+                           // Moon/Flower hits are taller
+                           attackBoxY = player.pos.y - 50;
+                           attackBoxH = player.height + 100; 
+                      }
                   }
 
                   if (
@@ -2030,6 +2051,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                             y: headY - 2,
                             vx: -swSpeed * (0.8 + Math.random() * 0.4),
                             vy: (Math.random() - 0.5) * 2 - 1,
+                            life: 1.0,
                             color: i % 2 === 0 ? 'rgba(120, 113, 108, 0.8)' : 'rgba(168, 162, 158, 0.5)',
                             size: 2 + Math.random() * 4
                         });
