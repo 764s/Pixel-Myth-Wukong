@@ -25,6 +25,11 @@ const COMBO_WINDOW_FRAMES = 50;
 
 const IMMOBILIZE_BREAK_THRESHOLD = 80; 
 
+const SETSUGEKKA_CHARGE_TIME = 60; // 1 second @ 60fps
+const SETSU_DAMAGE = 20;
+const GETSU_DAMAGE = 35;
+const KA_DAMAGE = 60;
+
 // Pixel Art Resolution (Physics is 800x450, Canvas is 480x270)
 const LOGICAL_WIDTH = 800;
 const LOGICAL_HEIGHT = 450;
@@ -154,12 +159,38 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       // Attack 3 (Spin Cross) Logic
       c3Rotations: 2,     
       c3Speed: 50,        
-      c3ExtraHits: 5, // Reduced from 10 as requested
+      c3ExtraHits: 5, 
       c3TotalDamage: 45,  
       c3Stun: 3,
       c3Interrupt: 0,
-      c3JumpForce: -5.5, // New Param
-      c3GravityScale: 0.25, // New Param
+      c3JumpForce: -5.5, 
+      c3GravityScale: 0.25, 
+
+      // Tech Attack (K) - Cloud Strike Logic
+      kDamage: 35,
+      kStun: 20,
+      kRadius: 60,
+      kJumpForce: -16,
+      kPlungeSpeed: 25,
+      kColor: '#0ea5e9', // Sky Blue
+
+      // Setsugekka (N)
+      setsuDist: 7, // Snow displacement (Short & Sharp)
+      setsuChargeFriction: 0.94, // Snow Charge Slide Friction (Higher = slipperier)
+      setsuDamage: 20,
+      getsuDamage: 35,
+      getsuJumpHeight: -10,
+      getsuSize: 1.4, // Scale of the moon
+      getsuFade: 25, // Extended for Atmosphere Window (Previously 12)
+      getsuHits: 2, // New: Number of hits during Moon phase
+      getsuStun: 0, // New: Hitstop duration (0 for smooth flow)
+      kaDamage: 60,
+      kaStun: 2, // Flower Hit Stop
+      kaPlungeSpeed: 20,
+      kaParticleCount: 8, // Per frame burst during plunge
+      kaTurbulence: 4,
+      kaSlideForce: 15,
+      kaSlideFriction: 0.90, // Increased slightly to allow longer glide
 
       bossBehavior: 'normal', // normal, idle, kowtow, patrol, jump_loop
       bossPatrolRange: 200,
@@ -206,7 +237,9 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     hasHitInAir: false,
     hasDealtDamage: false,
     hitStop: 0,
-    spellCooldown: 0
+    spellCooldown: 0,
+    techCooldown: 0,
+    sheatheTimer: 0
   });
 
   const bossRef = useRef<Entity | null>(null);
@@ -220,6 +253,9 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
   
   // TRACKER for Combo 3 multi-hits
   const c3HitsRef = useRef<number>(0);
+
+  // TRACKER for Setsugekka Moon Position (Static Visual)
+  const setsuMoonSnapshotRef = useRef<{x: number, y: number, facingRight: boolean} | null>(null);
 
   const keysRef = useRef<{ [key: string]: boolean }>({});
   const cameraXRef = useRef(0);
@@ -402,7 +438,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
   // --- SFX System ---
   const playSound = useCallback((
-      type: 'jump' | 'dash' | 'attack_light' | 'attack_heavy' | 'hit' | 'block' | 'charge' | 'spell' | 'hit_heavy' | 'break_spell' | 'counter' | 'counter_hit'
+      type: 'jump' | 'dash' | 'attack_light' | 'attack_heavy' | 'hit' | 'block' | 'charge' | 'spell' | 'hit_heavy' | 'break_spell' | 'counter' | 'counter_hit' | 'sheathe_charge' | 'setsu_slash' | 'getsu_slash' | 'ka_slash'
   ) => {
       if (!audioCtxRef.current) return;
       const ctx = audioCtxRef.current;
@@ -660,6 +696,66 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                chNGain.connect(ctx.destination);
                chSrc.start(t);
                break;
+
+           case 'sheathe_charge':
+               // A rising tension sound (Sine sweep up)
+               const scOsc = ctx.createOscillator();
+               scOsc.type = 'sine';
+               scOsc.frequency.setValueAtTime(100, t);
+               scOsc.frequency.linearRampToValueAtTime(300, t + 1.5);
+               const scGain = ctx.createGain();
+               scGain.gain.setValueAtTime(0.0, t);
+               scGain.gain.linearRampToValueAtTime(0.2, t + 0.5);
+               scGain.gain.linearRampToValueAtTime(0.0, t + 1.5);
+               scOsc.connect(scGain);
+               scGain.connect(ctx.destination);
+               scOsc.start(t);
+               scOsc.stop(t + 1.5);
+               break;
+               
+           case 'setsu_slash': // Snow - High crisp
+               const sS = ctx.createOscillator();
+               sS.type = 'sawtooth';
+               sS.frequency.setValueAtTime(1500, t);
+               sS.frequency.exponentialRampToValueAtTime(100, t + 0.15);
+               const sG = ctx.createGain();
+               sG.gain.setValueAtTime(0.15, t);
+               sG.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
+               sS.connect(sG);
+               sG.connect(ctx.destination);
+               sS.start(t);
+               sS.stop(t + 0.2);
+               playNoise(ctx, t, 0.1, 0.1); // Add hiss
+               break;
+               
+           case 'getsu_slash': // Moon - Resonant
+               const gS = ctx.createOscillator();
+               gS.type = 'square';
+               gS.frequency.setValueAtTime(800, t);
+               gS.frequency.exponentialRampToValueAtTime(50, t + 0.25);
+               const gG = ctx.createGain();
+               gG.gain.setValueAtTime(0.2, t);
+               gG.gain.exponentialRampToValueAtTime(0.001, t + 0.25);
+               gS.connect(gG);
+               gG.connect(ctx.destination);
+               gS.start(t);
+               gS.stop(t + 0.3);
+               break;
+               
+           case 'ka_slash': // Flower - Chaotic
+               const kS = ctx.createOscillator();
+               kS.type = 'triangle';
+               kS.frequency.setValueAtTime(1200, t);
+               kS.frequency.exponentialRampToValueAtTime(300, t + 0.3);
+               const kG = ctx.createGain();
+               kG.gain.setValueAtTime(0.2, t);
+               kG.gain.exponentialRampToValueAtTime(0.001, t + 0.3);
+               kS.connect(kG);
+               kG.connect(ctx.destination);
+               kS.start(t);
+               kS.stop(t + 0.4);
+               playNoise(ctx, t, 0.2, 0.2); // Add crunch
+               break;
       }
   }, []);
 
@@ -705,7 +801,9 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       hasHitInAir: false,
       hasDealtDamage: false,
       hitStop: 0,
-      spellCooldown: 0
+      spellCooldown: 0,
+      techCooldown: 0,
+      sheatheTimer: 0
     };
     
     bossRef.current = {
@@ -738,6 +836,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     particlesRef.current = [];
     combo4TrailsRef.current = [];
     prevCombo4TimeRef.current = null;
+    setsuMoonSnapshotRef.current = null;
     cameraXRef.current = 0;
     shakeRef.current = 0;
     c3HitsRef.current = 0;
@@ -826,7 +925,10 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         c2Damage, c2Stun, c2Shake, c2Interrupt,
         c3Rotations, c3Speed, c3ExtraHits, c3TotalDamage, c3Stun, c3Radius, c3Interrupt, c3JumpForce, c3GravityScale,
         c4Length, c4Damage, c4Knockback, c4Stun, c4Shake, c4SlideSpeed, c4SlideFriction, c4Interrupt,
-        heavyDamage, heavyRange, heavyKnockback, heavyStun, heavyShake, heavyInterrupt
+        heavyDamage, heavyRange, heavyKnockback, heavyStun, heavyShake, heavyInterrupt,
+        kDamage, kStun, kRadius, kJumpForce, kPlungeSpeed, kColor,
+        setsuDist, setsuChargeFriction, setsuDamage, getsuDamage, getsuJumpHeight, getsuFade, getsuHits, getsuStun,
+        kaDamage, kaStun, kaPlungeSpeed, kaParticleCount, kaTurbulence, kaSlideForce, kaSlideFriction
     } = debugParamsRef.current;
 
     // --- 1. Player Logic ---
@@ -839,6 +941,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       if (player.dodgeCooldown > 0) player.dodgeCooldown--;
       if (player.comboWindow > 0) player.comboWindow--;
       if (player.spellCooldown && player.spellCooldown > 0) player.spellCooldown--;
+      if (player.techCooldown && player.techCooldown > 0) player.techCooldown--;
 
       if (player.comboWindow === 0 && player.state !== 'attack') {
           player.comboCount = 0;
@@ -910,6 +1013,80 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       const isAttackPressed = keysRef.current['KeyJ'];
       const isDodgePressed = keysRef.current['ShiftLeft'] || keysRef.current['KeyL']; 
       const isSpellPressed = keysRef.current['KeyI'];
+      const isTechPressed = keysRef.current['KeyK'];
+      const isSetsuPressed = keysRef.current['KeyN'];
+
+      // --- NEW: Setsugekka Recovery Interrupt Logic ---
+      if (player.state === 'setsugekka' && player.animFrame > 32) { // 32 = After hit window
+          const isMove = keysRef.current['ArrowRight'] || keysRef.current['KeyD'] || keysRef.current['ArrowLeft'] || keysRef.current['KeyA'];
+          const isJump = keysRef.current['Space'];
+          if (isAttackPressed || isDodgePressed || isSpellPressed || isTechPressed || isMove || isJump) {
+              player.state = 'idle';
+              player.animFrame = 0;
+              player.animTimer = 0;
+              setsuMoonSnapshotRef.current = null;
+          }
+      }
+
+      // --- Setsugekka (N) Logic ---
+      if (isSetsuPressed && onGround && player.state !== 'dodge' && player.state !== 'hit' && player.state !== 'setsugekka') {
+          if (player.state !== 'sheathe_charge') {
+              player.state = 'sheathe_charge';
+              player.sheatheTimer = 0;
+              // vx is no longer set to 0 here to preserve momentum
+              playSound('sheathe_charge');
+          }
+          
+          player.sheatheTimer = (player.sheatheTimer || 0) + 1;
+          
+          // Particle effect while charging
+          if (player.sheatheTimer % 10 === 0) {
+               const radius = (player.sheatheTimer / SETSUGEKKA_CHARGE_TIME) * 40;
+               for(let i=0; i<6; i++) {
+                   const ang = (Math.PI * 2 / 6) * i;
+                   particlesRef.current.push({
+                       x: player.pos.x + player.width/2 + Math.cos(ang)*radius,
+                       y: player.pos.y + player.height/2 + Math.sin(ang)*radius,
+                       vx: -Math.cos(ang),
+                       vy: -Math.sin(ang),
+                       life: 0.5,
+                       color: '#38bdf8',
+                       size: 2
+                   });
+               }
+          }
+
+          if (player.sheatheTimer >= SETSUGEKKA_CHARGE_TIME) {
+              // Trigger Auto-Attack
+              player.state = 'setsugekka';
+              player.animFrame = 0;
+              player.animTimer = 0;
+              player.hasDealtDamage = false; // Reset for Hit 1
+              
+              // Visual Cue for full charge
+              playSound('break_spell'); // Use a sharp ping
+              shakeRef.current = 5;
+              createParticles(player.pos.x+player.width/2, player.pos.y+player.height/2, '#fff', 20, 8);
+          }
+      }
+      // Cancel Charge if N is released before threshold
+      else if (!isSetsuPressed && player.state === 'sheathe_charge') {
+          player.state = 'idle';
+          player.sheatheTimer = 0;
+      }
+
+      // --- Tech Attack (K) Logic ---
+      if (isTechPressed && (!player.techCooldown || player.techCooldown <= 0) && player.state !== 'dodge' && player.state !== 'hit' && player.state !== 'sheathe_charge' && player.state !== 'setsugekka') {
+           player.state = 'plunge';
+           player.vy = kJumpForce; // Rocket Jump Up
+           player.vx = player.facingRight ? 5 : -5; // Slight forward momentum
+           player.animFrame = 0;
+           player.animTimer = 0;
+           player.techCooldown = 120; // 2 seconds default
+           player.hasDealtDamage = false;
+           playSound('jump');
+           createParticles(player.pos.x + player.width/2, player.pos.y + player.height, '#fff', 10);
+      }
 
       // --- Spell Logic (Immobilize) ---
       if (isSpellPressed && (!player.spellCooldown || player.spellCooldown <= 0) && boss && !boss.isDead) {
@@ -962,13 +1139,14 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
           player.vx = player.facingRight ? DODGE_SPEED : -DODGE_SPEED;
           player.dodgeCooldown = DODGE_COOLDOWN;
           player.chargeTimer = 0;
+          player.sheatheTimer = 0; // Cancel sheathe if active
           setStamina((prev) => Math.max(0, prev - DODGE_STAMINA_COST));
           playSound('dash');
           createParticles(player.pos.x + player.width/2, player.pos.y + player.height, '#fff', 5);
       }
-      else if (player.state !== 'dodge' && player.state !== 'hit') {
+      else if (player.state !== 'dodge' && player.state !== 'hit' && player.state !== 'setsugekka' && player.state !== 'sheathe_charge') {
         if (isAttackPressed) {
-           if (player.state !== 'attack' && player.state !== 'heavy_attack') {
+           if (player.state !== 'attack' && player.state !== 'heavy_attack' && player.state !== 'plunge') {
              player.chargeTimer++;
              if (player.chargeTimer % 8 === 0) playSound('charge'); 
              if (player.chargeTimer > CHARGE_THRESHOLD && player.chargeTimer % 5 === 0) {
@@ -988,7 +1166,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                 playSound('attack_heavy');
             } 
             else {
-                const isAlreadyAttacking = player.state === 'attack' || player.state === 'heavy_attack';
+                const isAlreadyAttacking = player.state === 'attack' || player.state === 'heavy_attack' || player.state === 'plunge';
                 
                 let allowAttack = true;
                 
@@ -1064,7 +1242,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
       let moving = false;
       const isFinisher = player.state === 'attack' && player.comboCount === 4;
-      const movementLocked = player.state === 'dodge' || player.state === 'heavy_attack' || isFinisher;
+      const isPlunge = player.state === 'plunge' || player.state === 'plunge_end';
+      const movementLocked = player.state === 'dodge' || player.state === 'heavy_attack' || isFinisher || isPlunge || player.state === 'sheathe_charge' || player.state === 'setsugekka';
 
       if (!movementLocked) {
         const attackLockFrames = 5;
@@ -1088,9 +1267,20 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
          if (Math.abs(player.vx) < 1) player.state = 'idle';
       } else if (player.state === 'heavy_attack') {
          player.vx *= 0.85; 
+      } else if (player.state === 'sheathe_charge') {
+         // Apply friction during charge to slide to a stop
+         player.vx *= setsuChargeFriction;
+         if (Math.abs(player.vx) < 0.1) player.vx = 0;
       } else if (isFinisher) {
          // Apply specific friction for Attack 4 Slide
          player.vx *= c4SlideFriction; 
+      } else if (player.state === 'setsugekka') {
+          // Specific friction for Setsugekka sliding
+          if (player.animFrame >= 22) {
+              // Flower Stage - Non-linear deceleration
+              // Logic handled in state update below, but basic friction here
+              player.vx *= kaSlideFriction; 
+          }
       }
 
       if ((keysRef.current['Space']) && onGround && !movementLocked && player.state !== 'attack') {
@@ -1101,7 +1291,20 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
       if (player.state === 'attack' && player.comboCount === 3) {
          player.vy += GRAVITY * c3GravityScale; 
-      } else {
+      } 
+      else if (player.state === 'plunge') {
+         // Special Physics for Plunge
+         if (player.vy < -2) {
+             player.vy += GRAVITY; // Rising physics
+         } else {
+             // Once apex reached, rocket down
+             player.vy = kPlungeSpeed; 
+         }
+         
+         // Apply drag
+         player.vx *= 0.9;
+      }
+      else {
          player.vy += GRAVITY;
       }
       
@@ -1112,11 +1315,52 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         player.pos.y = GROUND_Y - player.height;
         player.vy = 0;
         player.hasHitInAir = false; 
+        
+        // Plunge Landing Logic
+        if (player.state === 'plunge') {
+            player.state = 'plunge_end';
+            player.animFrame = 0;
+            playSound('hit_heavy');
+            shakeRef.current = 15;
+            createParticles(player.pos.x + player.width/2, player.pos.y + player.height, kColor, 20, 10);
+            
+            // Plunge AoE Check
+            if (boss && !boss.isDead) {
+                const dist = Math.abs((player.pos.x + player.width/2) - (boss.pos.x + boss.width/2));
+                if (dist < kRadius) {
+                    if (boss.isImmobilized) {
+                        // Bonus damage or break logic can go here
+                        boss.immobilizeDamageTaken = (boss.immobilizeDamageTaken || 0) + kDamage;
+                        if (boss.immobilizeDamageTaken > IMMOBILIZE_BREAK_THRESHOLD) {
+                             boss.isImmobilized = false;
+                             playSound('break_spell');
+                        }
+                    }
+                    
+                    // Deal Damage
+                    if (infiniteHealth && boss.health - kDamage <= 0) {
+                        boss.health = boss.maxHealth;
+                    } else {
+                        boss.health -= kDamage;
+                    }
+                    setBossHealth(boss.health);
+                    setScore(s => s + Math.floor(kDamage));
+                    
+                    boss.vx = 0; // Stun in place
+                    boss.hitStop = kStun;
+                    player.hitStop = 6;
+                    
+                    boss.state = 'hit';
+                    boss.animFrame = 0;
+                    createParticles(boss.pos.x + boss.width/2, boss.pos.y + boss.height/2, kColor, 15, 6);
+                }
+            }
+        }
       }
       if (player.pos.x < 0) player.pos.x = 0;
       if (player.pos.x > 1200) player.pos.x = 1200;
 
-      const isAttacking = (player.state === 'attack' || player.state === 'heavy_attack');
+      const isAttacking = (player.state === 'attack' || player.state === 'heavy_attack' || player.state === 'setsugekka');
       let activeFrames = false;
       
       // --- COMBO 3 DYNAMIC LOGIC ---
@@ -1134,6 +1378,117 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
           }
           else if (player.comboCount === 4) activeFrames = player.animFrame >= 5 && player.animFrame <= 10; 
       } 
+      else if (player.state === 'setsugekka') {
+          // Setsugekka Logic (3 Stages - Adjusted for Jump-Plunge)
+          // Stage 1 (Snow): Frame 0-8. Horizontal Dash.
+          // Stage 2 (Moon): Frame 10-22. Upward Jump Slash.
+          // Stage 3 (Flower): Frame 22-35. Downward Plunge Slash.
+          
+          if (player.animFrame === 0) { // Start Snow
+              playSound('setsu_slash');
+              player.vx = player.facingRight ? setsuDist : -setsuDist; // Tunable displacement
+              
+              // Snow Particles
+              for(let i=0; i<10; i++) {
+                  particlesRef.current.push({
+                      x: player.pos.x + Math.random()*100 - 50,
+                      y: player.pos.y + Math.random()*50,
+                      vx: (Math.random() - 0.5) * 5,
+                      vy: Math.random() * 2,
+                      life: 1.5,
+                      color: '#e0f2fe',
+                      size: 2
+                  });
+              }
+          }
+          else if (player.animFrame === 10) { // Start Moon (JUMP UP)
+              playSound('getsu_slash');
+              player.vx = 0; // Halt forward momentum to focus on vertical
+              player.vy = getsuJumpHeight; // Tunable Jump Height
+              shakeRef.current = 5;
+              player.hasDealtDamage = false; // Reset for Hit 2 (Moon Start)
+              
+              // Capture Snapshot of position for the Static Moon Slash
+              setsuMoonSnapshotRef.current = {
+                  x: player.pos.x,
+                  y: player.pos.y,
+                  facingRight: player.facingRight
+              };
+          }
+          else if (player.animFrame === 15) { // Mid Moon Multi-Hit
+              if (getsuHits > 1) {
+                  player.hasDealtDamage = false; // Allow second hit
+              }
+          }
+          else if (player.animFrame === 22) { // Start Flower (SLAM DOWN)
+              playSound('ka_slash');
+              
+              // Horizontal IMPULSE force
+              const impulse = player.facingRight ? kaSlideForce : -kaSlideForce;
+              player.vx = impulse;
+              
+              player.vy = kaPlungeSpeed; // Slam down speed
+              shakeRef.current = 15;
+              player.hasDealtDamage = false; // Reset for Hit 3
+          }
+          
+          // FLOWER PARTICLES (Continuous Generation during plunge)
+          // Refined logic to favor swirling dispersion towards the end
+          if (player.animFrame >= 22 && player.animFrame <= 45) {
+               for(let i=0; i<kaParticleCount; i++) {
+                  const time = Date.now() / 100;
+                  // Wide scatter
+                  const offsetX = (Math.random() - 0.5) * 100; 
+                  
+                  // Start around player but also a bit high to simulate falling from "moon" height
+                  const startX = player.pos.x + player.width/2 + offsetX;
+                  const startY = player.pos.y - 20 + Math.random() * 60;
+
+                  const dir = player.facingRight ? 1 : -1;
+                  
+                  // Transition probability from Impact to Drift/Swirl
+                  // Early frames (22-30) = Impact
+                  // Late frames (30+) = Soft Drift
+                  const progress = Math.min(1, Math.max(0, (player.animFrame - 22) / 20));
+                  const driftChance = 0.2 + (progress * 0.8); // Starts low, becomes dominant
+
+                  const isDrift = Math.random() < driftChance;
+
+                  let vx, vy, life, size;
+
+                  if (isDrift) {
+                      // SWIRL / FLOATING UP (Part 2)
+                      // Gentle sine wave motion, drifting upwards/outwards
+                      vx = (Math.sin(time + i) * 3) + ((Math.random() - 0.5) * 3);
+                      vy = -Math.random() * 2 - 0.5; // Float UP
+                      life = 1.0 + Math.random() * 1.0; // Longer life
+                      size = Math.random() * 2 + 1;
+                  } else {
+                      // IMPACT (Part 1) - Reduced chaos at end
+                      // This was the "right-down" force. We dampen it heavily as progress increases.
+                      const dampening = 1.0 - progress;
+                      vx = (dir * 5 * dampening) + ((Math.random() - 0.5) * kaTurbulence);
+                      vy = (Math.random() * 4 + 2) * dampening; // Fall down force reduces
+                      life = 0.6 + Math.random() * 0.4;
+                      size = Math.random() * 3 + 2;
+                  }
+
+                  particlesRef.current.push({
+                      x: startX,
+                      y: startY, 
+                      vx: vx, 
+                      vy: vy, 
+                      life: life,
+                      color: Math.random() > 0.5 ? '#fbcfe8' : '#f9a8d4', // Pink / Light Pink
+                      size: size
+                  });
+              }
+          }
+
+          if (player.animFrame >= 0 && player.animFrame <= 7) activeFrames = true; // Hit 1 (Shortened)
+          else if (player.animFrame >= 10 && player.animFrame <= 20) activeFrames = true; // Hit 2 (Hitbox matches jump)
+          else if (player.animFrame >= 22 && player.animFrame <= 32) activeFrames = true; // Hit 3
+      }
       
       // Recalculate heavy attack range dynamically
       let dynamicHeavyReach = heavyRange;
@@ -1176,7 +1531,14 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                   player.hasDealtDamage = false;
                   c3HitsRef.current = currentHitIndex;
               }
-          } else if (player.state === 'attack') {
+          } else if (player.state === 'setsugekka') {
+              range = 150; 
+              interrupt = 1; // High stagger default
+              if (player.animFrame <= 8) damage = setsuDamage; // Hit 1
+              else if (player.animFrame <= 20) { damage = getsuDamage; range = 120; } // Hit 2 (Vertical)
+              else { damage = kaDamage; range = 180; } // Hit 3
+          }
+          else if (player.state === 'attack') {
               if (player.comboCount === 1) { damage = c1Damage; range = 90; interrupt = c1Interrupt; }
               if (player.comboCount === 2) { damage = c2Damage; range = 110; interrupt = c2Interrupt; }
               if (player.comboCount === 4) {
@@ -1257,6 +1619,12 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                           attackBoxW = slamReach;
                       }
                   }
+                  // Setsugekka Logic Height Check for Air
+                  if (player.state === 'setsugekka' && player.animFrame > 10) {
+                       // Moon/Flower hits are taller
+                       attackBoxY = player.pos.y - 50;
+                       attackBoxH = player.height + 100; 
+                  }
 
                   if (
                     attackBoxX < boss.pos.x + boss.width &&
@@ -1275,7 +1643,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
               }
 
               let shouldRegisterHit = false;
-              if (isMultiHit) {
+              if (isMultiHit || player.state === 'setsugekka') { 
                    if (!player.hasDealtDamage) {
                        shouldRegisterHit = true;
                    }
@@ -1294,7 +1662,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                      boss.health -= damage;
                  }
 
-                 const isHeavyHit = player.state === 'heavy_attack' || player.comboCount === 4;
+                 const isHeavyHit = player.state === 'heavy_attack' || player.comboCount === 4 || player.state === 'setsugekka';
 
                  if (boss.isImmobilized) {
                     boss.immobilizeDamageTaken = (boss.immobilizeDamageTaken || 0) + damage;
@@ -1343,7 +1711,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                      let kForce = 0; 
                      if (player.comboCount === 4) kForce = c4Knockback; // Use Debug Param
                      if (player.state === 'heavy_attack') kForce = heavyKnockback; // Use Debug Param
-                     
+                     if (player.state === 'setsugekka') kForce = 12;
+
                      boss.vx = player.facingRight ? kForce : -kForce;
                      
                      let stopDuration = 10; 
@@ -1368,6 +1737,21 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                              stopDuration = 8; 
                              shakeInt = 5;
                          }
+                     } else if (player.state === 'setsugekka') {
+                         // Override stun logic for Moon phase (Frames 10-20)
+                         if (player.animFrame >= 10 && player.animFrame <= 20) {
+                             stopDuration = getsuStun;
+                             shakeInt = 2;
+                         } else if (player.animFrame > 20) {
+                             // Flower Phase
+                             stopDuration = kaStun;
+                             shakeInt = 10;
+                         } else {
+                             // Snow Phase
+                             stopDuration = 15; 
+                             shakeInt = 10;
+                         }
+                         createParticles(boss.pos.x + boss.width/2, boss.pos.y + boss.height, '#fff', 15, 10);
                      } else if (player.comboCount === 1) {
                          stopDuration = c1Stun; 
                          shakeInt = c1Shake;
@@ -1393,12 +1777,12 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
                  setBossHealth(boss.health);
                  
-                 const pColor = (player.state === 'heavy_attack' || player.comboCount === 4) ? '#ef4444' : '#fbbf24';
+                 const pColor = (player.state === 'heavy_attack' || player.comboCount === 4 || player.state === 'setsugekka') ? '#ef4444' : '#fbbf24';
                  createParticles(boss.pos.x + boss.width/2, boss.pos.y + boss.height/2, pColor, 12); 
                  
                  setScore(s => s + Math.floor(damage));
                  
-                 if (isMultiHit) {
+                 if (isMultiHit || player.state === 'setsugekka') {
                      if (player.comboCount === 3) {
                          player.attackCooldown = 11;
                      } else {
@@ -1426,11 +1810,20 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       else if (player.state === 'heavy_attack' && player.animFrame >= 8) {
          player.state = 'idle';
       }
-      else if (isAttacking && player.attackCooldown <= 0 && !isFinisher && player.state !== 'heavy_attack' && player.comboCount !== 3) {
+      else if (player.state === 'plunge_end' && player.animFrame > 10) {
+          player.state = 'idle';
+          player.animFrame = 0;
+      }
+      else if (player.state === 'setsugekka' && player.animFrame > 55) { // Extended for Atmosphere Window (was 45)
+          player.state = 'idle';
+          player.animFrame = 0;
+          setsuMoonSnapshotRef.current = null; // Reset snapshot
+      }
+      else if (isAttacking && player.attackCooldown <= 0 && !isFinisher && player.state !== 'heavy_attack' && player.comboCount !== 3 && player.state !== 'setsugekka') {
         player.state = 'idle';
         player.comboWindow = COMBO_WINDOW_FRAMES;
       }
-      else if (player.state !== 'dodge' && !isAttacking) {
+      else if (player.state !== 'dodge' && !isAttacking && !isPlunge && player.state !== 'sheathe_charge') {
         if (!onGround) {
            player.state = player.vy > 0 ? 'fall' : 'jump';
         } else if (Math.abs(player.vx) > 0.1) {
@@ -1472,6 +1865,9 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       if (player.state === 'heavy_attack') animSpeed = 2; 
       if (player.state === 'dodge') animSpeed = 3;
       if (player.state === 'hit') animSpeed = 10;
+      if (player.state === 'plunge') animSpeed = 4;
+      if (player.state === 'plunge_end') animSpeed = 2;
+      if (player.state === 'setsugekka') animSpeed = 2;
       
       if (player.animTimer > animSpeed) {
         player.animFrame++;
@@ -1615,7 +2011,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                             y: headY - 2,
                             vx: -swSpeed * (0.8 + Math.random() * 0.4),
                             vy: (Math.random() - 0.5) * 2 - 1,
-                            life: 1.0,
                             color: i % 2 === 0 ? 'rgba(120, 113, 108, 0.8)' : 'rgba(168, 162, 158, 0.5)',
                             size: 2 + Math.random() * 4
                         });
@@ -1829,7 +2224,9 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         c3Radius, c3Width, c3Glow, c3Density, c3Opacity, c3Speed,
         c3BgBrightness, c3BgOpacity, c3BlurSteps, c3BlurFade,
         c4Length,
-        heavyRange, heavyWidth, heavyGlow, heavyOpacity
+        heavyRange, heavyWidth, heavyGlow, heavyOpacity,
+        kColor,
+        getsuSize, getsuFade
     } = debugParamsRef.current;
     
     // Using speed=1 for combo count 4 to match update logic
@@ -1843,6 +2240,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     if (p.state === 'heavy_attack') speed = 2;
     if (p.state === 'dodge') speed = 3;
     if (p.state === 'hit') speed = 10;
+    if (p.state === 'setsugekka') speed = 2;
     
     const smoothT = Math.min(1, p.animTimer / speed);
     const smoothFrame = animFrame + smoothT;
@@ -1854,6 +2252,11 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     if (state === 'hit' && hitStop > 0) {
         shakeX = (Math.random() - 0.5) * 4;
         shakeY = (Math.random() - 0.5) * 4;
+    }
+    // Shake during Sheathe charge
+    if (state === 'sheathe_charge') {
+        shakeX = (Math.random() - 0.5) * 1;
+        shakeY = (Math.random() - 0.5) * 1;
     }
     
     ctx.translate(Math.round(p.pos.x + w / 2 + shakeX), Math.round(p.pos.y + h + shakeY));
@@ -1876,6 +2279,35 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         drawRect(ctx, -7, -48 + bob, 14, 12, cFur); 
         drawRect(ctx, -6, -46 + bob, 9, 8, cSkin);
         drawRect(ctx, 10, -50 + bob, 3, 50, cStaff); 
+    }
+    else if (state === 'sheathe_charge') {
+        // Low crouch, hand on hilt
+        const tension = Math.min(1, (p.sheatheTimer || 0) / SETSUGEKKA_CHARGE_TIME);
+        const crouch = 5 + (tension * 3); // Get lower as tension builds
+        
+        drawRect(ctx, -14, -40 + crouch, 12, 30, cRed); 
+        drawRect(ctx, -9, -35 + crouch, 18, 25, cArmor); 
+        drawRect(ctx, -7, -42 + crouch, 14, 12, cFur); 
+        drawRect(ctx, -6, -40 + crouch, 9, 8, cSkin);
+        
+        // Sheathed Staff Posture (Horizontal at hip)
+        ctx.save();
+        ctx.translate(-5, -25 + crouch);
+        ctx.rotate(0.2); // Angled slightly up
+        drawRect(ctx, -20, 0, 50, 4, cStaff); // Sheath/Staff
+        
+        // Hand on hilt
+        drawRect(ctx, -15, -2, 6, 6, cSkin);
+        
+        // Spark of energy at hilt if charged
+        if (tension >= 1.0 && (Date.now() % 200 < 100)) {
+             ctx.globalCompositeOperation = 'lighter';
+             ctx.fillStyle = '#fff';
+             ctx.shadowColor = '#fff';
+             ctx.shadowBlur = 10;
+             ctx.fillRect(-16, -3, 8, 8);
+        }
+        ctx.restore();
     }
     else if (state === 'run') {
         const cycle = animFrame % 4; 
@@ -1907,6 +2339,71 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         ctx.rotate(-0.5);
         drawRect(ctx, -10, -25, 3, 50, cStaff);
         ctx.restore();
+    }
+    else if (state === 'plunge') {
+        // RISING
+        if (p.vy < 0) {
+             drawRect(ctx, -14, -50, 12, 30, cRed);
+             drawRect(ctx, -9, -40, 18, 25, cArmor);
+             drawRect(ctx, -7, -50, 14, 12, cFur);
+             drawRect(ctx, -6, -48, 9, 8, cSkin);
+             
+             // Overhead spin
+             ctx.save();
+             ctx.translate(0, -60);
+             ctx.rotate(Date.now() * 0.02);
+             ctx.fillStyle = kColor;
+             ctx.shadowColor = kColor;
+             ctx.shadowBlur = 20;
+             ctx.fillRect(-40, -2, 80, 4);
+             ctx.fillRect(-2, -40, 4, 80);
+             ctx.restore();
+        } 
+        // FALLING
+        else {
+             // Motion trail vertical
+             ctx.save();
+             ctx.globalAlpha = 0.5;
+             ctx.fillStyle = kColor;
+             ctx.fillRect(-2, -200, 4, 200);
+             ctx.globalAlpha = 1.0;
+             ctx.restore();
+
+             drawRect(ctx, -14, -50, 12, 30, cRed);
+             drawRect(ctx, -9, -40, 18, 25, cArmor);
+             
+             // Weapon pointing down
+             ctx.save();
+             ctx.translate(0, 0);
+             ctx.fillStyle = cStaff;
+             ctx.fillRect(-2, -60, 4, 80);
+             // Glowing tip
+             ctx.shadowColor = kColor;
+             ctx.shadowBlur = 15;
+             ctx.fillStyle = kColor;
+             ctx.fillRect(-3, 10, 6, 10);
+             ctx.restore();
+        }
+    }
+    else if (state === 'plunge_end') {
+         // Crouched with weapon stuck
+         drawRect(ctx, -14, -30, 12, 20, cRed);
+         drawRect(ctx, -9, -25, 18, 20, cArmor);
+         drawRect(ctx, -7, -30, 14, 12, cFur);
+         
+         ctx.save();
+         ctx.translate(20, 0);
+         ctx.rotate(0.2);
+         ctx.fillStyle = cStaff;
+         ctx.fillRect(-2, -60, 4, 70);
+         
+         // Energy residue
+         ctx.globalAlpha = 0.6 * (1 - animFrame/10);
+         ctx.fillStyle = kColor;
+         ctx.shadowColor = kColor;
+         ctx.shadowBlur = 20;
+         ctx.fillRect(-5, -80, 10, 80);
+         ctx.restore();
     }
     else if (state === 'attack') {
         if (comboCount === 1) {
@@ -2173,13 +2670,185 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
              ctx.fillStyle = '#fbbf24'; 
         }
 
-        // Start from center (0) and draw right
+        // Start from center of player and draw
         drawRect(ctx, 0, -35, currentLen, heavyWidth, cGold);
         
         ctx.globalCompositeOperation = 'source-over';
         ctx.shadowBlur = 0;
         ctx.globalAlpha = 1.0;
         drawRect(ctx, -20, -32, 30, 6, cStaff);
+    }
+    else if (state === 'setsugekka') {
+        // -- SETSUGEKKA RENDER --
+        
+        // Draw Player Body
+        const t = smoothFrame;
+        
+        // Body Posture for different stages
+        ctx.save();
+        let bodyAngle = 0;
+        if (t <= 8) bodyAngle = 0.4; // Forward dash lean
+        else if (t <= 20) bodyAngle = -0.3; // Upward Jump Look
+        else if (t <= 35) bodyAngle = 0.5; // Slam down lean
+        else bodyAngle = lerp(0.5, 0, (t-35)/20); // Recovery lean reset
+        
+        ctx.rotate(bodyAngle);
+        drawRect(ctx, -14, -48, 12, 30, cRed);
+        drawRect(ctx, -9, -38, 18, 28, cArmor);
+        
+        // Weapon Handle
+        ctx.translate(0, -35);
+        ctx.rotate(-0.2);
+        drawRect(ctx, -15, -2, 30, 5, cStaff);
+        
+        ctx.restore();
+        
+        // Draw Weapon / Effect based on timing
+        
+        // 1. SNOW (Horizontal Flash)
+        if (t >= 0 && t <= 8) {
+            ctx.save();
+            ctx.translate(0, -35);
+            ctx.globalCompositeOperation = 'lighter';
+            ctx.fillStyle = '#e0f2fe';
+            ctx.shadowColor = '#0ea5e9';
+            ctx.shadowBlur = 20;
+            
+            const width = lerp(20, 150, easeOutQuad((t)/6));
+            drawRect(ctx, 0, -4, width, 8, '#fff');
+            ctx.restore();
+        }
+        
+        // 2. MOON (Vertical Crescent Up) - STATIC WORLD POSITION
+        // Draw up until frame 20 + getsuFade
+        if (t >= 10 && t <= 20 + getsuFade) {
+            const snapshot = setsuMoonSnapshotRef.current;
+            if (snapshot) {
+                ctx.save();
+                
+                // Transform to World Space (Undo current player local transforms)
+                if (!p.facingRight) ctx.scale(-1, 1);
+                
+                const currX = p.pos.x + w/2;
+                const currY = p.pos.y + h;
+                const snapX = snapshot.x + w/2;
+                const snapY = snapshot.y + h;
+                
+                const dx = snapX - currX;
+                const dy = snapY - currY;
+                
+                ctx.translate(dx, dy);
+                
+                if (!snapshot.facingRight) ctx.scale(-1, 1);
+
+                // Position Moon
+                ctx.translate(30, -50); 
+
+                let alpha = 1.0;
+                if (t > 20) {
+                    const fadeProgress = Math.min(1, (t - 20) / getsuFade);
+                    alpha = Math.pow(1.0 - fadeProgress, 3);
+                }
+                ctx.globalAlpha = alpha;
+                
+                const scale = getsuSize; 
+                ctx.scale(scale, scale);
+                
+                // "BRUSH STROKE" REVEAL LOGIC
+                // Reveal from bottom to top over 6 frames (approx)
+                const revealDuration = 6;
+                const revealProgress = Math.min(1, (t - 10) / revealDuration);
+                
+                if (revealProgress < 1.0) {
+                    ctx.beginPath();
+                    // Clip from bottom (-100) upwards based on progress
+                    const clipHeight = 200 * revealProgress; 
+                    ctx.rect(-100, 100 - clipHeight, 200, clipHeight);
+                    ctx.clip();
+                }
+
+                // Draw "Perfect Planet Eclipse" Crescent
+                // 1. Draw The Light Source (Outer Circle)
+                ctx.globalCompositeOperation = 'lighter';
+                ctx.shadowColor = '#fbbf24';
+                ctx.shadowBlur = 30;
+                ctx.fillStyle = '#fefce8'; // Light cream/yellow
+
+                const outerRadius = 80;
+                const innerRadius = 75;
+                
+                // Changed offset to NEGATIVE to create the crescent on the RIGHT (Forward)
+                const xOffset = -20; 
+
+                ctx.beginPath();
+                ctx.arc(0, 0, outerRadius, 0, Math.PI * 2);
+                ctx.fill();
+
+                // 2. Subtract The Shadow (Inner Circle)
+                ctx.globalCompositeOperation = 'destination-out';
+                ctx.shadowBlur = 0;
+                ctx.fillStyle = '#000'; // Color doesn't matter for destination-out
+                
+                ctx.beginPath();
+                ctx.arc(xOffset, 0, innerRadius, 0, Math.PI * 2);
+                ctx.fill();
+
+                // Reset composite for subsequent draws
+                ctx.globalCompositeOperation = 'source-over';
+                
+                ctx.restore();
+            }
+        }
+        
+        // 3. FLOWER (Chaotic Flurry / Plunge)
+        if (t >= 22 && t <= 35) {
+            ctx.save();
+            ctx.translate(20, -20); // Centered on player landing area
+            
+            // --- THE CORE FLASH (Rhythmic Visual Beat) ---
+            // Pulse scale based on time to give it a "beating" center heart
+            const pulse = 1.0 + Math.sin((t - 22) * 0.8) * 0.3; 
+            const flashAlpha = Math.max(0, 1.0 - ((t - 22) / 10)); // Fades out
+            
+            ctx.save();
+            ctx.globalCompositeOperation = 'lighter';
+            ctx.fillStyle = '#fbcfe8'; // Pinkish white
+            ctx.shadowColor = '#f472b6'; // Deep pink glow
+            ctx.shadowBlur = 30 * pulse;
+            ctx.globalAlpha = flashAlpha * 0.8;
+            
+            ctx.beginPath();
+            ctx.arc(0, 0, 40 * pulse, 0, Math.PI*2);
+            ctx.fill();
+            ctx.restore();
+
+            // --- Spiral Lines ---
+            ctx.globalCompositeOperation = 'lighter';
+            ctx.strokeStyle = '#fbcfe8'; // Lighter pink
+            ctx.lineWidth = 2;
+            ctx.shadowColor = '#ec4899';
+            ctx.shadowBlur = 15;
+            
+            const progress = (t-22)/10;
+            
+            // Rotating Petal Slash lines (Visual Guide)
+            for (let i=0; i<6; i++) {
+                ctx.save();
+                const angle = (i * 60 + (progress * 220)) * (Math.PI/180);
+                ctx.rotate(angle);
+                
+                const dist = 30 + (Math.sin(progress * 10 + i)*10);
+                
+                ctx.beginPath();
+                ctx.moveTo(10, 0);
+                ctx.quadraticCurveTo(dist, 10, dist * 1.5, 0);
+                ctx.stroke();
+                
+                ctx.restore();
+            }
+            
+            ctx.restore();
+        }
     }
     else if (state === 'dodge') {
         ctx.globalAlpha = 0.4; 
@@ -2595,6 +3264,18 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                                                 >
                                                     Heavy Attack (Charge)
                                                 </button>
+                                                <button 
+                                                    onClick={() => setSelectedSkill('tech')}
+                                                    className={`text-left px-2 py-1 rounded ${selectedSkill === 'tech' ? 'bg-yellow-900/30 text-yellow-500 border-l-2 border-yellow-500' : 'text-gray-400 hover:bg-gray-800'}`}
+                                                >
+                                                    Cloud Strike (K)
+                                                </button>
+                                                <button 
+                                                    onClick={() => setSelectedSkill('setsu')}
+                                                    className={`text-left px-2 py-1 rounded ${selectedSkill === 'setsu' ? 'bg-yellow-900/30 text-yellow-500 border-l-2 border-yellow-500' : 'text-gray-400 hover:bg-gray-800'}`}
+                                                >
+                                                    Setsugekka (N)
+                                                </button>
                                             </>
                                         ) : (
                                             <div className="text-gray-600 italic text-xs px-2">No Configurable Skills</div>
@@ -2833,6 +3514,98 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                                                 </div>
                                              </div>
                                         )}
+
+                                        {selectedEntity === 'player' && selectedSkill === 'tech' && (
+                                             <div className="flex flex-col gap-4">
+                                                <div className="bg-gray-800/30 p-2 rounded border border-gray-800">
+                                                    <h5 className="text-yellow-700 font-bold mb-2">Cloud Strike (K) Logic</h5>
+                                                    <div className="space-y-3">
+                                                        <div><div className="flex justify-between"><span>Damage</span><span className="text-yellow-500">{debugValues.kDamage}</span></div>
+                                                        <input type="range" min="10" max="100" step="5" value={debugValues.kDamage} onChange={(e) => updateDebug('kDamage', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+
+                                                        <div><div className="flex justify-between"><span>AoE Radius</span><span className="text-yellow-500">{debugValues.kRadius}</span></div>
+                                                        <input type="range" min="20" max="150" step="5" value={debugValues.kRadius} onChange={(e) => updateDebug('kRadius', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+
+                                                        <div><div className="flex justify-between"><span>Stun Frames</span><span className="text-yellow-500">{debugValues.kStun}</span></div>
+                                                        <input type="range" min="0" max="40" step="1" value={debugValues.kStun} onChange={(e) => updateDebug('kStun', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+
+                                                        <div><div className="flex justify-between"><span>Jump Height (Force)</span><span className="text-yellow-500">{debugValues.kJumpForce}</span></div>
+                                                        <input type="range" min="-25" max="-5" step="0.5" value={debugValues.kJumpForce} onChange={(e) => updateDebug('kJumpForce', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+
+                                                        <div><div className="flex justify-between"><span>Plunge Speed</span><span className="text-yellow-500">{debugValues.kPlungeSpeed}</span></div>
+                                                        <input type="range" min="10" max="40" step="1" value={debugValues.kPlungeSpeed} onChange={(e) => updateDebug('kPlungeSpeed', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+                                                    </div>
+                                                </div>
+                                             </div>
+                                        )}
+
+                                        {selectedEntity === 'player' && selectedSkill === 'setsu' && (
+                                             <div className="flex flex-col gap-4">
+                                                <div className="bg-gray-800/30 p-2 rounded border border-gray-800">
+                                                    <h5 className="text-yellow-700 font-bold mb-2">Stage 1: Snow (Dash)</h5>
+                                                    <div className="space-y-3">
+                                                        <div><div className="flex justify-between"><span>Displacement Force</span><span className="text-yellow-500">{debugValues.setsuDist}</span></div>
+                                                        <input type="range" min="5" max="40" step="1" value={debugValues.setsuDist} onChange={(e) => updateDebug('setsuDist', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+                                                        
+                                                        <div><div className="flex justify-between"><span>Charge Friction</span><span className="text-yellow-500">{debugValues.setsuChargeFriction?.toFixed(2)}</span></div>
+                                                        <input type="range" min="0.5" max="0.99" step="0.01" value={debugValues.setsuChargeFriction || 0.94} onChange={(e) => updateDebug('setsuChargeFriction', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+
+                                                        <div><div className="flex justify-between"><span>Damage</span><span className="text-yellow-500">{debugValues.setsuDamage}</span></div>
+                                                        <input type="range" min="5" max="100" step="5" value={debugValues.setsuDamage} onChange={(e) => updateDebug('setsuDamage', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+                                                    </div>
+                                                </div>
+
+                                                <div className="bg-gray-800/30 p-2 rounded border border-gray-800">
+                                                    <h5 className="text-yellow-700 font-bold mb-2">Stage 2: Moon (Jump)</h5>
+                                                    <div className="space-y-3">
+                                                        <div><div className="flex justify-between"><span>Damage</span><span className="text-yellow-500">{debugValues.getsuDamage}</span></div>
+                                                        <input type="range" min="10" max="150" step="5" value={debugValues.getsuDamage} onChange={(e) => updateDebug('getsuDamage', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+
+                                                        <div><div className="flex justify-between"><span>Jump Height</span><span className="text-yellow-500">{debugValues.getsuJumpHeight}</span></div>
+                                                        <input type="range" min="-25" max="-5" step="0.5" value={debugValues.getsuJumpHeight} onChange={(e) => updateDebug('getsuJumpHeight', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+
+                                                        <div><div className="flex justify-between"><span>Moon Size Scale</span><span className="text-yellow-500">{debugValues.getsuSize.toFixed(1)}</span></div>
+                                                        <input type="range" min="0.5" max="2.0" step="0.1" value={debugValues.getsuSize} onChange={(e) => updateDebug('getsuSize', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+                                                        
+                                                        <div><div className="flex justify-between"><span>Fade Out Duration</span><span className="text-yellow-500">{debugValues.getsuFade}</span></div>
+                                                        <input type="range" min="0" max="40" step="1" value={debugValues.getsuFade} onChange={(e) => updateDebug('getsuFade', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+
+                                                        <div><div className="flex justify-between"><span>Hit Count</span><span className="text-yellow-500">{debugValues.getsuHits}</span></div>
+                                                        <input type="range" min="1" max="3" step="1" value={debugValues.getsuHits} onChange={(e) => updateDebug('getsuHits', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+
+                                                        <div><div className="flex justify-between"><span>Hit Stun</span><span className="text-yellow-500">{debugValues.getsuStun}</span></div>
+                                                        <input type="range" min="0" max="10" step="1" value={debugValues.getsuStun} onChange={(e) => updateDebug('getsuStun', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+                                                    </div>
+                                                </div>
+
+                                                <div className="bg-gray-800/30 p-2 rounded border border-gray-800">
+                                                    <h5 className="text-yellow-700 font-bold mb-2">Stage 3: Flower (Plunge)</h5>
+                                                    <div className="space-y-3">
+                                                        <div><div className="flex justify-between"><span>Damage</span><span className="text-yellow-500">{debugValues.kaDamage}</span></div>
+                                                        <input type="range" min="20" max="200" step="5" value={debugValues.kaDamage} onChange={(e) => updateDebug('kaDamage', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+
+                                                        <div><div className="flex justify-between"><span>Hit Stop Frames</span><span className="text-yellow-500">{debugValues.kaStun}</span></div>
+                                                        <input type="range" min="0" max="30" step="1" value={debugValues.kaStun} onChange={(e) => updateDebug('kaStun', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+
+                                                        <div><div className="flex justify-between"><span>Plunge Speed</span><span className="text-yellow-500">{debugValues.kaPlungeSpeed}</span></div>
+                                                        <input type="range" min="10" max="50" step="1" value={debugValues.kaPlungeSpeed} onChange={(e) => updateDebug('kaPlungeSpeed', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+
+                                                        <div><div className="flex justify-between"><span>Particle Count</span><span className="text-yellow-500">{debugValues.kaParticleCount}</span></div>
+                                                        <input type="range" min="1" max="20" step="1" value={debugValues.kaParticleCount} onChange={(e) => updateDebug('kaParticleCount', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+                                                        
+                                                        <div><div className="flex justify-between"><span>Particle Turbulence</span><span className="text-yellow-500">{debugValues.kaTurbulence}</span></div>
+                                                        <input type="range" min="0" max="20" step="1" value={debugValues.kaTurbulence} onChange={(e) => updateDebug('kaTurbulence', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+                                                        
+                                                        <div><div className="flex justify-between"><span>Horizontal Impulse</span><span className="text-yellow-500">{debugValues.kaSlideForce}</span></div>
+                                                        <input type="range" min="0" max="30" step="1" value={debugValues.kaSlideForce} onChange={(e) => updateDebug('kaSlideForce', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+                                                        
+                                                        <div><div className="flex justify-between"><span>Slide Friction</span><span className="text-yellow-500">{debugValues.kaSlideFriction.toFixed(2)}</span></div>
+                                                        <input type="range" min="0.5" max="0.99" step="0.01" value={debugValues.kaSlideFriction} onChange={(e) => updateDebug('kaSlideFriction', parseFloat(e.target.value))} className="w-full accent-yellow-600" /></div>
+                                                    </div>
+                                                </div>
+                                             </div>
+                                        )}
+
                                     </div>
                                 </div>
                             )}

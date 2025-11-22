@@ -140,8 +140,10 @@ const GameUI: React.FC<GameUIProps> = ({
             <div className="flex justify-between gap-4"><span className="text-yellow-700 font-bold">Space</span> <span>Jump</span></div>
             <div className="flex justify-between gap-4"><span className="text-yellow-700 font-bold">J</span> <span>Attack</span></div>
             <div className="flex justify-between gap-4"><span className="text-yellow-700 font-bold">Hold J</span> <span>Heavy</span></div>
+            <div className="flex justify-between gap-4"><span className="text-yellow-700 font-bold">K</span> <span>Cloud Strike</span></div>
             <div className="flex justify-between gap-4"><span className="text-yellow-700 font-bold">L / Shift</span> <span>Dodge</span></div>
             <div className="flex justify-between gap-4"><span className="text-yellow-700 font-bold">I</span> <span>Immobilize</span></div>
+            <div className="flex justify-between gap-4"><span className="text-yellow-700 font-bold">Hold N</span> <span>Setsugekka</span></div>
         </div>
       </div>
 

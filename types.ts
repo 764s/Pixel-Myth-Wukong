@@ -25,7 +25,7 @@ export interface Entity {
   isDead: boolean;
   facingRight: boolean;
   type: 'player' | 'enemy' | 'boss';
-  state: 'idle' | 'run' | 'jump' | 'fall' | 'attack' | 'air_attack' | 'heavy_attack' | 'dodge' | 'hit' | 'jump_smash' | 'standoff' | 'kowtow_attack';
+  state: 'idle' | 'run' | 'jump' | 'fall' | 'attack' | 'air_attack' | 'heavy_attack' | 'dodge' | 'hit' | 'jump_smash' | 'standoff' | 'kowtow_attack' | 'plunge' | 'plunge_end' | 'sheathe_charge' | 'setsugekka';
   attackCooldown: number;
   dodgeCooldown: number;
   chargeTimer: number; // For heavy attack calculation
@@ -42,6 +42,12 @@ export interface Entity {
   isImmobilized?: boolean;
   immobilizeTimer?: number;
   immobilizeDamageTaken?: number; // Tracks cumulative damage during immobilization
+
+  // New Props for Tech Attack
+  techCooldown?: number;
+  
+  // New Props for Setsugekka
+  sheatheTimer?: number;
 }
 
 export interface Particle {
